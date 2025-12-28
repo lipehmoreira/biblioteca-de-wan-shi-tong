@@ -24,6 +24,14 @@ if 'user' not in st.session_state: st.session_state.user = None
 if 'edit_id' not in st.session_state: st.session_state.edit_id = None
 if 'serie_manager_id' not in st.session_state: st.session_state.serie_manager_id = None
 
+# --- CONFIGURAÇÃO DE PLATAFORMAS (REQ. DO USUÁRIO) ---
+MAPA_PLATAFORMAS = {
+    "Livro": ["Físico", "Digital"],
+    "Jogo": ["PC", "PlayStation", "Xbox", "Nintendo Switch", "Mobile"],
+    "Filme": ["Cinema", "Netflix", "Prime Video", "Disney+", "Max", "Apple TV+", "Stremio", "GloboPlay", "Outros"],
+    "Série": ["Netflix", "Prime Video", "Disney+", "Max", "Apple TV+", "Stremio", "GloboPlay", "TV", "Outros"]
+}
+
 # --- CONEXÃO ---
 conn = st.connection("postgresql", type="sql")
 
@@ -367,12 +375,12 @@ def render_categoria_page(titulo_pagina, categoria_db, filtro_ano, filtro_mes):
                     with ec1:
                         st.text_input("Título", value=row['titulo'], key="edit_titulo")
                         st.text_input("Categoria", value=row['tipo'], disabled=True, key="edit_tipo")
-                        l = ["Netflix", "Prime Video", "Disney+", "Max", "Apple TV", "Cinema", "Stremio", "TV"]
-                        if categoria_db == "Jogo": l = ["Steam", "Epic", "Ubisoft", "GOG", "Xbox", "PS", "Switch"]
-                        elif categoria_db == "Livro": l = ["Kindle", "Físico", "Audiobook"]
+                        
+                        # --- LISTA DINÂMICA NA EDIÇÃO ---
+                        lista_plat = MAPA_PLATAFORMAS.get(row['tipo'], ["Outros"])
                         idx_plat = 0
-                        if row['plataforma'] in l: idx_plat = l.index(row['plataforma'])
-                        st.selectbox("Plataforma", l, index=idx_plat, key="edit_plataforma")
+                        if row['plataforma'] in lista_plat: idx_plat = lista_plat.index(row['plataforma'])
+                        st.selectbox("Plataforma", lista_plat, index=idx_plat, key="edit_plataforma")
 
                     with ec2:
                         l_status = ["Concluído", "Em Andamento", "Abandonado"]
@@ -419,7 +427,7 @@ def render_categoria_page(titulo_pagina, categoria_db, filtro_ano, filtro_mes):
             
     if df.empty: st.warning("Nada com estes filtros."); return
 
-    # ABAS (ANALYTICS ADICIONADO AQUI)
+    # ABAS (BIBLIOTECA & ANALYTICS)
     tab_galeria, tab_analytics = st.tabs(["📚 Biblioteca", "📊 Analytics"])
 
     with tab_galeria:
@@ -527,8 +535,12 @@ else:
         c1, c2 = st.columns(2)
         with c1:
             st.text_input("Título", key="novo_titulo")
-            st.selectbox("Categoria", ["Jogo", "Filme", "Série", "Livro"], key="novo_tipo")
-            st.selectbox("Plataforma", ["Steam", "PS", "Xbox", "Netflix", "Prime Video", "Kindle", "Outros"], key="nova_plataforma")
+            tp = st.selectbox("Categoria", ["Jogo", "Filme", "Série", "Livro"], key="novo_tipo")
+            
+            # --- LISTA DINÂMICA NO REGISTRO ---
+            lista_plat = MAPA_PLATAFORMAS.get(tp, ["Outros"])
+            st.selectbox("Plataforma", lista_plat, key="nova_plataforma")
+
         with c2:
             st.selectbox("Status", ["Concluído", "Em Andamento", "Abandonado"], key="novo_status")
             st.text_input("URL Capa", key="nova_capa")
