@@ -9,7 +9,7 @@ from sqlalchemy import text
 import hashlib
 
 # --- VERSÃO ---
-APP_VERSION = "6.4 (Fix Final Importação)"
+APP_VERSION = "6.5 (Fix State Conflict)"
 DEV_NAME = "FzR0"
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
@@ -23,13 +23,14 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- ESTADO E INICIALIZAÇÃO DE VARIÁVEIS (CORREÇÃO IMPORTANTE) ---
+# --- ESTADO E INICIALIZAÇÃO DE VARIÁVEIS ---
 if 'user' not in st.session_state: st.session_state.user = None
 if 'edit_id' not in st.session_state: st.session_state.edit_id = None
 if 'serie_manager_id' not in st.session_state: st.session_state.serie_manager_id = None
 if 'search_results' not in st.session_state: st.session_state.search_results = [] 
 
-# Inicializa variáveis dos widgets de cadastro para garantir atualização correta
+# Inicializa variáveis dos widgets de cadastro
+# O Streamlit usará esses valores iniciais para preencher os widgets automaticamente
 if 'novo_titulo' not in st.session_state: st.session_state.novo_titulo = ""
 if 'novo_capa' not in st.session_state: st.session_state.novo_capa = ""
 if 'novo_sinopse_texto' not in st.session_state: st.session_state.novo_sinopse_texto = ""
@@ -130,7 +131,7 @@ def executar_busca(termo, categoria):
         st.toast("Nenhum resultado encontrado.", icon="❌")
 
 def confirmar_selecao(item, categoria):
-    # --- CORREÇÃO: Atualiza diretamente as chaves dos widgets ---
+    # Atualiza diretamente as chaves dos widgets no Session State
     st.session_state.novo_titulo = item['titulo']
     st.session_state.novo_sinopse_texto = item['sinopse']
     st.session_state.novo_capa = item['capa']
@@ -139,13 +140,13 @@ def confirmar_selecao(item, categoria):
     st.session_state.novo_tipo_manual = categoria
     st.session_state.novo_tipo = categoria
     
-    # Atualiza Plataforma Padrão (evita erro de índice no selectbox)
+    # Atualiza Plataforma Padrão
     if categoria == "Filme": st.session_state.nova_plataforma = "Cinema"
     elif categoria == "Série": st.session_state.nova_plataforma = "Netflix"
     elif categoria == "Jogo": st.session_state.nova_plataforma = "PC"
     elif categoria == "Livro": st.session_state.nova_plataforma = "Físico"
     
-    # Tenta preencher ano (opcional)
+    # Tenta preencher ano
     if item['data_str']:
         try:
             if len(item['data_str']) == 4: dt = datetime.strptime(item['data_str'], "%Y").date()
@@ -478,20 +479,14 @@ else:
         c1, c2 = st.columns(2)
         with c1:
             st.text_input("Título", key="novo_titulo")
-            # Logica de seleção de tipo e plataforma
-            idx_tp = 0
+            
+            # --- CORREÇÃO DO CONFLITO DE WIDGET ---
+            # Removemos o parâmetro index. O widget agora obedece apenas à key "novo_tipo_manual".
             opt_tp = ["Jogo", "Filme", "Série", "Livro"]
-            
-            # Tenta pegar o index atual baseado no state
-            try:
-                curr_tp = st.session_state.novo_tipo_manual
-                if curr_tp in opt_tp: idx_tp = opt_tp.index(curr_tp)
-            except: pass
-            
-            tp = st.selectbox("Categoria", opt_tp, index=idx_tp, key="novo_tipo_manual")
+            tp = st.selectbox("Categoria", opt_tp, key="novo_tipo_manual")
             st.session_state.novo_tipo = tp 
             
-            # Plataforma
+            # Plataforma (agora obedecendo à key "nova_plataforma")
             st.selectbox("Plataforma", MAPA_PLATAFORMAS.get(tp, ["Outros"]), key="nova_plataforma")
             
             if tp in ["Jogo", "Livro", "Série"]:
