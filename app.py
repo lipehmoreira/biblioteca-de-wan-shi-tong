@@ -10,7 +10,7 @@ import hashlib
 import textwrap
 
 # --- VERSÃO ---
-APP_VERSION = "7.2 (Animes + Fix Livros)"
+APP_VERSION = "7.3 (Fix Google 403 + Flag JP)"
 DEV_NAME = "FzR0"
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
@@ -43,7 +43,6 @@ if 'novo_status' not in st.session_state: st.session_state.novo_status = "Em And
 if 'nova_nota' not in st.session_state: st.session_state.nova_nota = 75
 
 # --- CONSTANTES ---
-# ADICIONADO: Categoria Anime e plataformas específicas
 MAPA_PLATAFORMAS = {
     "Livro": ["Físico", "Kindle", "Audible", "Digital PDF", "Outros"],
     "Jogo": ["PC", "PlayStation", "Xbox", "Nintendo Switch", "Mobile"],
@@ -72,9 +71,7 @@ def buscar_tmdb(query, categoria):
     api_key = st.secrets.get("api", {}).get("tmdb_key")
     if not api_key: st.warning("⚠️ Chave TMDB não configurada."); return []
     
-    # Se for Filme, busca movie. Se for Série ou Anime, busca tv.
     tipo_api = "movie" if categoria == "Filme" else "tv"
-    
     url = f"https://api.themoviedb.org/3/search/{tipo_api}?api_key={api_key}&query={query}&language=pt-BR"
     
     lista_final = []
@@ -102,13 +99,25 @@ def buscar_tmdb(query, categoria):
     except Exception as e: st.error(f"Erro TMDB: {e}")
     return lista_final
 
-# 2. API DE LIVROS (GOOGLE BOOKS) - FIX
+# 2. API DE LIVROS (GOOGLE BOOKS) - FIX 403
 def buscar_google_books(query):
-    # Google Books é pública, não exige chave para buscas simples
-    url = f"https://www.googleapis.com/books/v1/volumes?q={query}&langRestrict=pt&maxResults=10"
+    # Correção do Erro 403: Adiciona User-Agent para simular um navegador real
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+    }
+    
+    # Se você tiver uma chave no futuro, coloque em secrets.toml [api] google_books_key = "..."
+    # Mas a API pública deve funcionar com o header acima.
+    api_key = st.secrets.get("api", {}).get("google_books_key")
+    
+    if api_key:
+        url = f"https://www.googleapis.com/books/v1/volumes?q={query}&langRestrict=pt&maxResults=10&key={api_key}"
+    else:
+        url = f"https://www.googleapis.com/books/v1/volumes?q={query}&langRestrict=pt&maxResults=10"
+        
     lista_final = []
     try:
-        resp = requests.get(url)
+        resp = requests.get(url, headers=headers)
         if resp.status_code == 200:
             data = resp.json()
             if 'items' in data:
@@ -118,7 +127,6 @@ def buscar_google_books(query):
                     dt_str = info.get('publishedDate', '')
                     ano = dt_str[:4] if dt_str else "N/A"
                     
-                    # Tratamento de imagem mais robusto
                     imgs = info.get('imageLinks', {})
                     capa = imgs.get('thumbnail') or imgs.get('smallThumbnail') or ""
                     
@@ -132,7 +140,7 @@ def buscar_google_books(query):
                         "origem": "google"
                     })
         else:
-            st.error(f"Erro Google Books: Status {resp.status_code}")
+            st.error(f"Erro Google Books: Status {resp.status_code}. Tente novamente em instantes.")
     except Exception as e: st.error(f"Erro G.Books: {e}")
     return lista_final
 
@@ -171,7 +179,6 @@ def executar_busca(termo, categoria):
     if not termo: return
     res = []
     
-    # Adicionado Anime na verificação do TMDB
     if categoria in ["Filme", "Série", "Anime"]:
         with st.spinner(f"Pesquisando {categoria} no TMDB..."): res = buscar_tmdb(termo, categoria)
     elif categoria == "Livro":
@@ -185,11 +192,11 @@ def executar_busca(termo, categoria):
         st.session_state.search_results = []
         st.toast("Nenhum resultado encontrado.", icon="❌")
 
-# --- CONFIRMAÇÃO E ENRIQUECIMENTO ---
+# --- CONFIRMAÇÃO ---
 def confirmar_selecao(item, categoria):
     sinopse_final = item['sinopse']
     
-    # Se for jogo e tiver API configurada, busca detalhes
+    # Busca detalhes do jogo RAWG
     if item.get('origem') == 'rawg':
         api_key = st.secrets.get("api", {}).get("rawg_key")
         if api_key:
@@ -207,12 +214,11 @@ def confirmar_selecao(item, categoria):
     st.session_state.novo_capa = item['capa']
     st.session_state.novo_tipo_manual = categoria
     
-    # Atualizado Padrões de Plataforma
     if categoria == "Filme": st.session_state.nova_plataforma = "Cinema"
     elif categoria == "Série": st.session_state.nova_plataforma = "Netflix"
-    elif categoria == "Anime": st.session_state.nova_plataforma = "Crunchyroll" # Padrão para Anime
+    elif categoria == "Anime": st.session_state.nova_plataforma = "Crunchyroll" 
     elif categoria == "Jogo": st.session_state.nova_plataforma = "PC"
-    elif categoria == "Livro": st.session_state.nova_plataforma = "Físico" # Padrão para Livro
+    elif categoria == "Livro": st.session_state.nova_plataforma = "Físico" 
     
     if item['data_str']:
         try:
@@ -223,7 +229,7 @@ def confirmar_selecao(item, categoria):
     st.session_state.search_results = [] 
     st.toast(f"Dados importados: {item['titulo']}", icon="✅")
 
-# --- AUTENTICAÇÃO ---
+# --- AUTENTICAÇÃO E CRUD (Inalterado) ---
 def hash_pass(password): return hashlib.sha256(password.encode()).hexdigest()
 def register_user(username, password):
     user_clean, pass_hash = username.strip().lower(), hash_pass(password)
@@ -241,7 +247,6 @@ def login_user(username, password):
         else: st.error("Dados incorretos.")
     except Exception as e: st.error(f"Erro login: {e}")
 
-# --- CRUD ---
 def add_midia(titulo, tipo, plataforma, status, nota, comentario, sinopse, data_reg, capa_url, nickname, d_ini, d_fim, dono):
     try:
         with conn.session as s:
@@ -345,7 +350,6 @@ def gerar_card(titulo, nota, comentario, url_imagem, nickname, sinopse_bd):
     y = img.size[1] + 20
     draw.text((15, y), f"{titulo[:30]}", fill="#FFF", font=f_t)
     
-    # WRAP INTELIGENTE
     linhas = textwrap.wrap(f"\"{texto_base}\"", width=45)
     if len(linhas) > 3:
         linhas = linhas[:3]
@@ -372,7 +376,6 @@ def ativar_edicao(id_item):
     for key in keys_edicao:
         if key in st.session_state:
             del st.session_state[key]
-            
     st.session_state.edit_id = id_item
 
 def salvar_novo_registro():
@@ -424,14 +427,11 @@ def atualizar_registro():
         return
 
     update_midia(id_e, t, tp, p, s, n, c, sin, dr, url, nick, d_ini, d_fim, tr, st.session_state.user)
-    
     st.session_state.msg_sucesso_edit = f"✅ {t} atualizado!"
     st.session_state.edit_id = None
 
 def render_categoria_page(tit, cat, f_ano, f_mes):
     st.header(f"{tit}")
-    
-    # Habilitado gerenciador de episódios para SÉRIE e ANIME
     if st.session_state.serie_manager_id and cat in ["Série", "Anime"]:
         info = conn.query("SELECT * FROM midia WHERE id=:id AND dono=:o", params={"id": st.session_state.serie_manager_id, "o": st.session_state.user}, ttl=0)
         if not info.empty:
@@ -535,8 +535,6 @@ def render_categoria_page(tit, cat, f_ano, f_mes):
                         if r['comentario']: st.markdown(f"💬 **Nota:** {r['comentario']}")
                         
                         st.button("✏️", key=f"e_{r['id']}", on_click=ativar_edicao, args=(r['id'],))
-                        
-                        # Passamos a sinopse também para a função de gerar card
                         cdata = gerar_card(r['titulo'], r['nota'], r['comentario'], r['capa_url'], r['nickname'], r['sinopse'])
                         st.download_button("📸", cdata, f"c_{r['id']}.png", key=f"d_{r['id']}")
 
@@ -580,7 +578,6 @@ else:
     if pg == "Registrar Novo":
         st.title("➕ Novo")
         
-        # --- EXIBE AS MENSAGENS DE SUCESSO E ERRO ---
         if 'msg_sucesso' in st.session_state and st.session_state.msg_sucesso: 
             st.success(st.session_state.msg_sucesso)
             st.session_state.msg_sucesso = None 
@@ -590,13 +587,11 @@ else:
                 st.error(f"❌ {erro}")
             st.session_state.msg_erro = None 
 
-        # BUSCA SELETIVA
         bc1, bc2 = st.columns([3, 1])
         term = bc1.text_input("🔍 Busca Automática")
         cat_search = bc2.selectbox("Tipo Busca", ["Filme", "Série", "Anime", "Livro", "Jogo"])
         if bc2.button("Buscar"): executar_busca(term, cat_search)
         
-        # EXIBE RESULTADOS PARA SELEÇÃO
         if st.session_state.search_results:
             st.info("Selecione o resultado correto abaixo:")
             opts = {item['label']: item for item in st.session_state.search_results}
