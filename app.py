@@ -9,7 +9,7 @@ from sqlalchemy import text
 import hashlib
 
 # --- VERSÃO ---
-APP_VERSION = "6.3 (Fix Update)"
+APP_VERSION = "6.4 (Fix Final Importação)"
 DEV_NAME = "FzR0"
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
@@ -23,11 +23,19 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- ESTADO ---
+# --- ESTADO E INICIALIZAÇÃO DE VARIÁVEIS (CORREÇÃO IMPORTANTE) ---
 if 'user' not in st.session_state: st.session_state.user = None
 if 'edit_id' not in st.session_state: st.session_state.edit_id = None
 if 'serie_manager_id' not in st.session_state: st.session_state.serie_manager_id = None
 if 'search_results' not in st.session_state: st.session_state.search_results = [] 
+
+# Inicializa variáveis dos widgets de cadastro para garantir atualização correta
+if 'novo_titulo' not in st.session_state: st.session_state.novo_titulo = ""
+if 'novo_capa' not in st.session_state: st.session_state.novo_capa = ""
+if 'novo_sinopse_texto' not in st.session_state: st.session_state.novo_sinopse_texto = ""
+if 'novo_comentario' not in st.session_state: st.session_state.novo_comentario = ""
+if 'novo_tipo_manual' not in st.session_state: st.session_state.novo_tipo_manual = "Filme"
+if 'nova_plataforma' not in st.session_state: st.session_state.nova_plataforma = "Cinema"
 
 # --- CONSTANTES ---
 MAPA_PLATAFORMAS = {
@@ -122,38 +130,26 @@ def executar_busca(termo, categoria):
         st.toast("Nenhum resultado encontrado.", icon="❌")
 
 def confirmar_selecao(item, categoria):
-    # --- CORREÇÃO DE ESTADO ---
-    # Atualiza as chaves específicas dos Widgets para garantir visualização
+    # --- CORREÇÃO: Atualiza diretamente as chaves dos widgets ---
     st.session_state.novo_titulo = item['titulo']
-    
-    # 1. Força a atualização da sinopse (usando a mesma chave do text_area)
     st.session_state.novo_sinopse_texto = item['sinopse']
-    
-    # 2. Força a atualização da capa
     st.session_state.novo_capa = item['capa']
     
-    # 3. Força a atualização da Categoria (Selectbox)
-    st.session_state.novo_tipo_manual = categoria # Chave do widget
-    st.session_state.novo_tipo = categoria # Variável de controle
+    # Atualiza Categoria
+    st.session_state.novo_tipo_manual = categoria
+    st.session_state.novo_tipo = categoria
     
-    # 4. Ajusta Plataforma Padrão para evitar erro de lista incompatível
-    # Se mudou para Filme, define "Cinema". Se Série, "Netflix", etc.
-    if categoria == "Filme":
-        st.session_state.nova_plataforma = "Cinema"
-    elif categoria == "Série":
-        st.session_state.nova_plataforma = "Netflix"
-    elif categoria == "Jogo":
-        st.session_state.nova_plataforma = "PC"
-    elif categoria == "Livro":
-        st.session_state.nova_plataforma = "Físico"
+    # Atualiza Plataforma Padrão (evita erro de índice no selectbox)
+    if categoria == "Filme": st.session_state.nova_plataforma = "Cinema"
+    elif categoria == "Série": st.session_state.nova_plataforma = "Netflix"
+    elif categoria == "Jogo": st.session_state.nova_plataforma = "PC"
+    elif categoria == "Livro": st.session_state.nova_plataforma = "Físico"
     
-    # Tenta converter data (opcional, mantido)
+    # Tenta preencher ano (opcional)
     if item['data_str']:
         try:
-            if len(item['data_str']) == 4:
-                 dt = datetime.strptime(item['data_str'], "%Y").date()
-            else:
-                 dt = datetime.strptime(item['data_str'][:10], "%Y-%m-%d").date()
+            if len(item['data_str']) == 4: dt = datetime.strptime(item['data_str'], "%Y").date()
+            else: dt = datetime.strptime(item['data_str'][:10], "%Y-%m-%d").date()
         except: pass
     
     st.session_state.search_results = [] 
@@ -283,10 +279,11 @@ def gerar_card(titulo, nota, comentario, url_imagem, nickname):
 
 # --- ACTIONS ---
 def salvar_novo_registro():
+    # Lê diretamente dos estados dos widgets
     t, tp, p, s, n, c = st.session_state.novo_titulo, st.session_state.novo_tipo_manual, st.session_state.nova_plataforma, st.session_state.novo_status, st.session_state.novo_nota, st.session_state.novo_comentario
     url, nick = st.session_state.novo_capa, st.session_state.user
     
-    # Pega a sinopse do Text Area (novo_sinopse_texto)
+    # Sinopse vem do text area
     sin = st.session_state.get('novo_sinopse_texto', '')
     
     d_ini, d_fim = st.session_state.get('nova_data_inicio'), st.session_state.get('nova_data_fim', datetime.now().date())
@@ -485,13 +482,16 @@ else:
             idx_tp = 0
             opt_tp = ["Jogo", "Filme", "Série", "Livro"]
             
-            # Recupera estado se existir
-            # A chave do widget é 'novo_tipo_manual', mas checamos a variavel de controle
+            # Tenta pegar o index atual baseado no state
+            try:
+                curr_tp = st.session_state.novo_tipo_manual
+                if curr_tp in opt_tp: idx_tp = opt_tp.index(curr_tp)
+            except: pass
             
-            tp = st.selectbox("Categoria", opt_tp, key="novo_tipo_manual")
+            tp = st.selectbox("Categoria", opt_tp, index=idx_tp, key="novo_tipo_manual")
             st.session_state.novo_tipo = tp 
             
-            # Recupera plataforma, garantindo que a lista seja válida
+            # Plataforma
             st.selectbox("Plataforma", MAPA_PLATAFORMAS.get(tp, ["Outros"]), key="nova_plataforma")
             
             if tp in ["Jogo", "Livro", "Série"]:
@@ -502,7 +502,7 @@ else:
             st.text_input("Capa URL", key="novo_capa")
             st.slider("Nota", 0, 100, 75, key="nova_nota")
         
-        # MUDANÇA: Agora a sinopse é um Text Area visível e editável
+        # Sinopse ligada à variável inicializada
         st.text_area("Sinopse Automática", height=150, key="novo_sinopse_texto")
             
         st.text_area("Seu Comentário", key="novo_comentario")
