@@ -9,7 +9,7 @@ from sqlalchemy import text
 import hashlib
 
 # --- VERSÃO ---
-APP_VERSION = "6.2 (Busca Seletiva)"
+APP_VERSION = "6.3 (Fix Update)"
 DEV_NAME = "FzR0"
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
@@ -27,7 +27,7 @@ st.markdown("""
 if 'user' not in st.session_state: st.session_state.user = None
 if 'edit_id' not in st.session_state: st.session_state.edit_id = None
 if 'serie_manager_id' not in st.session_state: st.session_state.serie_manager_id = None
-if 'search_results' not in st.session_state: st.session_state.search_results = [] # Lista de resultados da busca
+if 'search_results' not in st.session_state: st.session_state.search_results = [] 
 
 # --- CONSTANTES ---
 MAPA_PLATAFORMAS = {
@@ -50,7 +50,7 @@ def init_db():
         except: pass
         s.commit()
 
-# --- INTEGRAÇÃO COM APIS (NOVA LÓGICA DE LISTA) ---
+# --- INTEGRAÇÃO COM APIS ---
 def buscar_tmdb(query, categoria):
     api_key = st.secrets.get("api", {}).get("tmdb_key")
     if not api_key: st.warning("⚠️ Chave TMDB não configurada."); return []
@@ -60,9 +60,9 @@ def buscar_tmdb(query, categoria):
     
     lista_final = []
     try:
-        resp = requests.get(url); data = resp.json()
+        resp = requests.get(url)
+        data = resp.json()
         if data.get('results'):
-            # Pega os Top 10 resultados
             for item in data['results'][:10]:
                 titulo = item.get('title') if categoria == "Filme" else item.get('name')
                 dt_str = item.get('release_date') if categoria == "Filme" else item.get('first_air_date')
@@ -85,7 +85,8 @@ def buscar_google_books(query):
     url = f"https://www.googleapis.com/books/v1/volumes?q={query}&langRestrict=pt&maxResults=10"
     lista_final = []
     try:
-        resp = requests.get(url); data = resp.json()
+        resp = requests.get(url)
+        data = resp.json()
         if 'items' in data:
             for item in data['items']:
                 info = item['volumeInfo']
@@ -121,26 +122,42 @@ def executar_busca(termo, categoria):
         st.toast("Nenhum resultado encontrado.", icon="❌")
 
 def confirmar_selecao(item, categoria):
-    # Preenche os campos do formulário
+    # --- CORREÇÃO DE ESTADO ---
+    # Atualiza as chaves específicas dos Widgets para garantir visualização
     st.session_state.novo_titulo = item['titulo']
-    st.session_state.novo_sinopse_auto = item['sinopse']
-    st.session_state.novo_capa = item['capa']
-    st.session_state.novo_tipo = categoria
     
-    # Tenta converter data
+    # 1. Força a atualização da sinopse (usando a mesma chave do text_area)
+    st.session_state.novo_sinopse_texto = item['sinopse']
+    
+    # 2. Força a atualização da capa
+    st.session_state.novo_capa = item['capa']
+    
+    # 3. Força a atualização da Categoria (Selectbox)
+    st.session_state.novo_tipo_manual = categoria # Chave do widget
+    st.session_state.novo_tipo = categoria # Variável de controle
+    
+    # 4. Ajusta Plataforma Padrão para evitar erro de lista incompatível
+    # Se mudou para Filme, define "Cinema". Se Série, "Netflix", etc.
+    if categoria == "Filme":
+        st.session_state.nova_plataforma = "Cinema"
+    elif categoria == "Série":
+        st.session_state.nova_plataforma = "Netflix"
+    elif categoria == "Jogo":
+        st.session_state.nova_plataforma = "PC"
+    elif categoria == "Livro":
+        st.session_state.nova_plataforma = "Físico"
+    
+    # Tenta converter data (opcional, mantido)
     if item['data_str']:
         try:
-            # Tenta formatos comuns
-            if len(item['data_str']) == 4: # Só ano
+            if len(item['data_str']) == 4:
                  dt = datetime.strptime(item['data_str'], "%Y").date()
             else:
                  dt = datetime.strptime(item['data_str'][:10], "%Y-%m-%d").date()
-            # Como não temos campo de data de lançamento no form, podemos usar isso se quiser no futuro
-            # Por enquanto, não vamos alterar data de inicio/fim para não confundir registro
         except: pass
     
-    st.session_state.search_results = [] # Limpa a busca
-    st.toast("Formulário preenchido!", icon="✅")
+    st.session_state.search_results = [] 
+    st.toast(f"Dados importados: {item['titulo']}", icon="✅")
 
 # --- AUTENTICAÇÃO ---
 def hash_pass(password): return hashlib.sha256(password.encode()).hexdigest()
@@ -266,9 +283,12 @@ def gerar_card(titulo, nota, comentario, url_imagem, nickname):
 
 # --- ACTIONS ---
 def salvar_novo_registro():
-    t, tp, p, s, n, c = st.session_state.novo_titulo, st.session_state.novo_tipo, st.session_state.nova_plataforma, st.session_state.novo_status, st.session_state.novo_nota, st.session_state.novo_comentario
+    t, tp, p, s, n, c = st.session_state.novo_titulo, st.session_state.novo_tipo_manual, st.session_state.nova_plataforma, st.session_state.novo_status, st.session_state.novo_nota, st.session_state.novo_comentario
     url, nick = st.session_state.novo_capa, st.session_state.user
-    sin = st.session_state.get('novo_sinopse_auto', '')
+    
+    # Pega a sinopse do Text Area (novo_sinopse_texto)
+    sin = st.session_state.get('novo_sinopse_texto', '')
+    
     d_ini, d_fim = st.session_state.get('nova_data_inicio'), st.session_state.get('nova_data_fim', datetime.now().date())
     
     erros = []
@@ -277,7 +297,8 @@ def salvar_novo_registro():
     if erros: st.session_state.msg_erro = erros
     else:
         add_midia(t, tp, p, s, n, c, sin, datetime.now().date(), url, nick, d_ini, d_fim, st.session_state.user)
-        for k in ['novo_titulo', 'novo_comentario', 'novo_capa', 'novo_sinopse_auto']: 
+        # Limpa campos
+        for k in ['novo_titulo', 'novo_comentario', 'novo_capa', 'novo_sinopse_texto']: 
             if k in st.session_state: st.session_state[k] = ""
         st.session_state.msg_sucesso = f"✅ {t} salvo!"; st.session_state.msg_erro = None
 
@@ -463,11 +484,14 @@ else:
             # Logica de seleção de tipo e plataforma
             idx_tp = 0
             opt_tp = ["Jogo", "Filme", "Série", "Livro"]
-            if 'novo_tipo' in st.session_state and st.session_state.novo_tipo in opt_tp:
-                idx_tp = opt_tp.index(st.session_state.novo_tipo)
             
-            tp = st.selectbox("Categoria", opt_tp, index=idx_tp, key="novo_tipo_manual")
+            # Recupera estado se existir
+            # A chave do widget é 'novo_tipo_manual', mas checamos a variavel de controle
+            
+            tp = st.selectbox("Categoria", opt_tp, key="novo_tipo_manual")
             st.session_state.novo_tipo = tp 
+            
+            # Recupera plataforma, garantindo que a lista seja válida
             st.selectbox("Plataforma", MAPA_PLATAFORMAS.get(tp, ["Outros"]), key="nova_plataforma")
             
             if tp in ["Jogo", "Livro", "Série"]:
@@ -478,8 +502,8 @@ else:
             st.text_input("Capa URL", key="novo_capa")
             st.slider("Nota", 0, 100, 75, key="nova_nota")
         
-        if 'novo_sinopse_auto' in st.session_state and st.session_state.novo_sinopse_auto:
-             st.caption(f"Sinopse carregada: {st.session_state.novo_sinopse_auto[:60]}...")
+        # MUDANÇA: Agora a sinopse é um Text Area visível e editável
+        st.text_area("Sinopse Automática", height=150, key="novo_sinopse_texto")
             
         st.text_area("Seu Comentário", key="novo_comentario")
         st.button("Salvar", type="primary", on_click=salvar_novo_registro)
