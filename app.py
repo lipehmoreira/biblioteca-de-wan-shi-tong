@@ -9,7 +9,7 @@ from sqlalchemy import text
 import hashlib
 
 # --- VERSÃO ---
-APP_VERSION = "6.6 (Fix Save Error)"
+APP_VERSION = "6.8 (Fix Duplicação Edição)"
 DEV_NAME = "FzR0"
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
@@ -273,21 +273,31 @@ def gerar_card(titulo, nota, comentario, url_imagem, nickname):
         draw.text((largura - (bb[2]-bb[0]) - 15, y + 90), f"- {nickname.title()}", fill="#999", font=f_n)
     buf = BytesIO(); card.save(buf, format="PNG"); return buf.getvalue()
 
-# --- ACTIONS (CORREÇÃO AQUI) ---
+# --- ACTIONS & CALLBACKS ---
+def ativar_edicao(id_item):
+    """Callback para ativar a edição limpando o estado anterior"""
+    # Lista de chaves de edição que podem estar poluídas
+    keys_edicao = [
+        "edit_titulo", "edit_tipo", "edit_plataforma", "edit_status", 
+        "edit_nota", "edit_comentario", "edit_capa", "edit_nick", 
+        "edit_travar", "edit_sinopse", "edit_data_inicio", "edit_data_fim"
+    ]
+    # Limpa as chaves para forçar o recarregamento dos dados do novo ID
+    for key in keys_edicao:
+        if key in st.session_state:
+            del st.session_state[key]
+            
+    st.session_state.edit_id = id_item
+
 def salvar_novo_registro():
-    # USAMOS .get() PARA EVITAR ATTRIBUTE ERROR
     t = st.session_state.get('novo_titulo', '')
     tp = st.session_state.get('novo_tipo_manual', 'Filme')
     p = st.session_state.get('nova_plataforma', 'Outros')
     s = st.session_state.get('novo_status', 'Em Andamento')
     n = st.session_state.get('nova_nota', 0)
     c = st.session_state.get('novo_comentario', '')
-    
     url, nick = st.session_state.get('novo_capa', ''), st.session_state.user
-    
-    # Sinopse vem do text area
     sin = st.session_state.get('novo_sinopse_texto', '')
-    
     d_ini = st.session_state.get('nova_data_inicio')
     d_fim = st.session_state.get('nova_data_fim', datetime.now().date())
     
@@ -297,21 +307,38 @@ def salvar_novo_registro():
     if erros: st.session_state.msg_erro = erros
     else:
         add_midia(t, tp, p, s, n, c, sin, datetime.now().date(), url, nick, d_ini, d_fim, st.session_state.user)
-        # Limpa campos com segurança
         for k in ['novo_titulo', 'novo_comentario', 'novo_capa', 'novo_sinopse_texto']: 
             if k in st.session_state: st.session_state[k] = ""
         st.session_state.msg_sucesso = f"✅ {t} salvo!"; st.session_state.msg_erro = None
 
 def atualizar_registro():
-    id_e, t, tp, p, s, n, c = st.session_state.edit_id, st.session_state.edit_titulo, st.session_state.edit_tipo, st.session_state.edit_plataforma, st.session_state.edit_status, st.session_state.edit_nota, st.session_state.edit_comentario
-    url, nick, tr = st.session_state.edit_capa, st.session_state.edit_nick, st.session_state.get('edit_travar', False)
-    sin = st.session_state.edit_sinopse
-    d_ini, d_fim = st.session_state.get('edit_data_inicio'), st.session_state.get('edit_data_fim')
+    id_e = st.session_state.edit_id
+    # Usa .get() para segurança
+    t = st.session_state.get('edit_titulo', '')
+    tp = st.session_state.get('edit_tipo', '')
+    p = st.session_state.get('edit_plataforma', '')
+    s = st.session_state.get('edit_status', '')
+    n = st.session_state.get('edit_nota', 0)
+    c = st.session_state.get('edit_comentario', '')
+    url = st.session_state.get('edit_capa', '')
+    nick = st.session_state.get('edit_nick', '')
+    tr = st.session_state.get('edit_travar', False)
+    sin = st.session_state.get('edit_sinopse', '')
+    d_ini = st.session_state.get('edit_data_inicio')
+    d_fim = st.session_state.get('edit_data_fim')
+    
     orig = conn.query("SELECT data_registro FROM midia WHERE id=:id", params={"id": id_e}, ttl=0)
     dr = orig.iloc[0]['data_registro'] if not orig.empty else datetime.now().date()
-    if not t.strip(): st.session_state.msg_erro_edit = ["Título obrigatório."]; return
+    
+    if not t.strip(): 
+        st.session_state.msg_erro_edit = ["Título obrigatório."]
+        return
+
     update_midia(id_e, t, tp, p, s, n, c, sin, dr, url, nick, d_ini, d_fim, tr, st.session_state.user)
-    st.session_state.msg_sucesso_edit = f"✅ {t} atualizado!"; st.session_state.edit_id = None; st.rerun()
+    
+    st.session_state.msg_sucesso_edit = f"✅ {t} atualizado!"
+    st.session_state.edit_id = None
+    # Callback termina, Streamlit faz o rerun automático
 
 def render_categoria_page(tit, cat, f_ano, f_mes):
     st.header(f"{tit}")
@@ -416,7 +443,11 @@ def render_categoria_page(tit, cat, f_ano, f_mes):
                             st.markdown(f"_{r['sinopse']}_")
                             st.divider()
                         if r['comentario']: st.markdown(f"💬 **Nota:** {r['comentario']}")
-                        if st.button("✏️", key=f"e_{r['id']}"): st.session_state.edit_id = r['id']; st.rerun()
+                        
+                        # --- CORREÇÃO DO BOTÃO EDITAR ---
+                        # Usamos on_click para chamar a função que limpa o estado
+                        st.button("✏️", key=f"e_{r['id']}", on_click=ativar_edicao, args=(r['id'],))
+                        
                         cdata = gerar_card(r['titulo'], r['nota'], r['comentario'], r['capa_url'], r['nickname'])
                         st.download_button("📸", cdata, f"c_{r['id']}.png", key=f"d_{r['id']}")
 
@@ -483,6 +514,7 @@ else:
             st.text_input("Título", key="novo_titulo")
             
             # --- WIDGETS DE CADASTRO ---
+            # Removemos o parâmetro index para evitar conflito
             opt_tp = ["Jogo", "Filme", "Série", "Livro"]
             tp = st.selectbox("Categoria", opt_tp, key="novo_tipo_manual")
             st.session_state.novo_tipo = tp 
@@ -497,7 +529,7 @@ else:
             st.text_input("Capa URL", key="novo_capa")
             st.slider("Nota", 0, 100, 75, key="nova_nota")
         
-        # Sinopse
+        # Sinopse ligada à variável inicializada
         st.text_area("Sinopse Automática", height=150, key="novo_sinopse_texto")
             
         st.text_area("Seu Comentário", key="novo_comentario")
