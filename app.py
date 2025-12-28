@@ -128,7 +128,6 @@ def update_midia(id_item, titulo, tipo, plataforma, status, nota, comentario, da
     trava_int = 1 if travar_nota else 0
     try:
         with conn.session as s:
-            # UPDATE COMPLETO COM RESTRIÇÃO DE DONO
             s.execute(
                 text('''
                 UPDATE midia 
@@ -289,7 +288,6 @@ def salvar_novo_registro():
     
     erros = []
     if not t.strip(): erros.append("Título obrigatório.")
-    # RESTAURADO: VALIDAÇÃO DE COMENTÁRIO
     if s == "Concluído" and tp != "Série":
         if not c.strip(): erros.append("Comentário é obrigatório para itens concluídos.")
         if n == 0: erros.append("Nota deve ser maior que 0.")
@@ -317,7 +315,6 @@ def atualizar_registro():
     d_fim = st.session_state.get('edit_data_fim', None)
     travar = st.session_state.get('edit_travar', False)
 
-    # PRESERVAR DATA DE REGISTRO
     df_orig = conn.query("SELECT data_registro FROM midia WHERE id=:id", params={"id": id_edit}, ttl=0)
     data_reg = df_orig.iloc[0]['data_registro'] if not df_orig.empty else datetime.now().date()
 
@@ -331,7 +328,7 @@ def atualizar_registro():
 def render_categoria_page(titulo_pagina, categoria_db, filtro_ano, filtro_mes):
     st.header(f"{titulo_pagina}")
     
-    # GERENCIADOR DE EPISÓDIOS
+    # GERENCIADOR EPISÓDIOS
     if st.session_state.serie_manager_id is not None and categoria_db == "Série":
         serie_check = conn.query("SELECT * FROM midia WHERE id=:id AND dono=:owner", params={"id": st.session_state.serie_manager_id, "owner": st.session_state.user}, ttl=0)
         if not serie_check.empty:
@@ -359,7 +356,7 @@ def render_categoria_page(titulo_pagina, categoria_db, filtro_ano, filtro_mes):
                 if st.button("Fechar"): st.session_state.serie_manager_id = None; st.rerun()
             st.markdown("---")
     
-    # ÁREA DE EDIÇÃO (RESTAURADO COMPLETO)
+    # EDIÇÃO
     if st.session_state.edit_id is not None:
         item_df = conn.query("SELECT * FROM midia WHERE id=:id AND dono=:owner", params={"id": st.session_state.edit_id, "owner": st.session_state.user}, ttl=0)
         if not item_df.empty:
@@ -405,16 +402,13 @@ def render_categoria_page(titulo_pagina, categoria_db, filtro_ano, filtro_mes):
                         
                     st.text_area("Comentário", value=row['comentario'], key="edit_comentario")
                     
-                    # BOTÕES DE AÇÃO RESTAURADOS
                     b1, b2, b3 = st.columns([1, 1, 3])
                     b1.button("💾 Atualizar", type="primary", on_click=atualizar_registro)
                     b2.button("🗑️ Excluir", on_click=lambda: (delete_midia(st.session_state.edit_id, st.session_state.user), st.session_state.update({"edit_id": None})))
-                    if b3.button("Cancelar"):
-                        st.session_state.edit_id = None
-                        st.rerun()
+                    if b3.button("Cancelar"): st.session_state.edit_id = None; st.rerun()
                 st.divider()
 
-    # LISTAGEM
+    # DADOS
     df = get_data(st.session_state.user, categoria_db)
     if df.empty: st.info("Nenhum registro."); return
 
@@ -425,55 +419,70 @@ def render_categoria_page(titulo_pagina, categoria_db, filtro_ano, filtro_mes):
             
     if df.empty: st.warning("Nada com estes filtros."); return
 
-    # FILTROS DE ORDENAÇÃO RESTAURADOS
-    col_s1, _ = st.columns([1, 3])
-    with col_s1:
-        sort_map = {
-            "Data (Mais Recente)": "date_desc",
-            "Data (Mais Antigo)": "date_asc",
-            "Nota (Melhores)": "score_desc",
-            "Nota (Piores)": "score_asc",
-            "Nome (A-Z)": "title_asc"
-        }
-        sort_label = st.selectbox("Ordenar:", list(sort_map.keys()), key=f"s_{categoria_db}")
-        sort_op = sort_map[sort_label]
-    
-    if sort_op == "date_desc": df = df.sort_values(by="data_registro", ascending=False)
-    elif sort_op == "date_asc": df = df.sort_values(by="data_registro", ascending=True)
-    elif sort_op == "score_desc": df = df.sort_values(by="nota", ascending=False)
-    elif sort_op == "score_asc": df = df.sort_values(by="nota", ascending=True)
-    elif sort_op == "title_asc": df = df.sort_values(by="titulo", ascending=True)
-    df = df.reset_index(drop=True)
+    # ABAS (ANALYTICS ADICIONADO AQUI)
+    tab_galeria, tab_analytics = st.tabs(["📚 Biblioteca", "📊 Analytics"])
 
-    cols = st.columns(5)
-    for index, row in df.iterrows():
-        with cols[index % 5]:
-            with st.container(border=True):
-                st.image(row['capa_url'] if row['capa_url'] else "https://placehold.co/300x450")
-                st.markdown(f"**{row['titulo']}**")
-                
-                nota_show = int(row['nota'])
-                if row['status'] == "Concluído":
-                    if nota_show >= 75: st.success(f"🏆 {nota_show}")
-                    elif nota_show >= 50: st.warning(f"😐 {nota_show}")
-                    else: st.error(f"💔 {nota_show}")
-                elif row['status'] == "Abandonado": st.error("💀 Abandonado")
-                else: st.info("⏳ Em Andamento")
-                
-                if categoria_db == "Série" and st.button("📺 Eps", key=f"ep_{row['id']}"): st.session_state.serie_manager_id = row['id']; st.rerun()
-                with st.expander("Ver +"):
-                    if pd.notnull(row['data_inicio']):
-                        di = row['data_inicio'].strftime('%d/%m/%Y')
-                        dfim = row['data_fim'].strftime('%d/%m/%Y') if pd.notnull(row['data_fim']) else "..."
-                        st.caption(f"🗓️ {di} a {dfim}")
-                    else:
-                        dreg = row['data_registro'].strftime('%d/%m/%Y') if pd.notnull(row['data_registro']) else "-"
-                        st.caption(f"📅 Registrado em: {dreg}")
+    with tab_galeria:
+        col_s1, _ = st.columns([1, 3])
+        with col_s1:
+            sort_map = {
+                "Data (Mais Recente)": "date_desc",
+                "Data (Mais Antigo)": "date_asc",
+                "Nota (Melhores)": "score_desc",
+                "Nota (Piores)": "score_asc",
+                "Nome (A-Z)": "title_asc"
+            }
+            sort_label = st.selectbox("Ordenar:", list(sort_map.keys()), key=f"s_{categoria_db}")
+            sort_op = sort_map[sort_label]
+        
+        if sort_op == "date_desc": df = df.sort_values(by="data_registro", ascending=False)
+        elif sort_op == "date_asc": df = df.sort_values(by="data_registro", ascending=True)
+        elif sort_op == "score_desc": df = df.sort_values(by="nota", ascending=False)
+        elif sort_op == "score_asc": df = df.sort_values(by="nota", ascending=True)
+        elif sort_op == "title_asc": df = df.sort_values(by="titulo", ascending=True)
+        df = df.reset_index(drop=True)
+
+        cols = st.columns(5)
+        for index, row in df.iterrows():
+            with cols[index % 5]:
+                with st.container(border=True):
+                    st.image(row['capa_url'] if row['capa_url'] else "https://placehold.co/300x450")
+                    st.markdown(f"**{row['titulo']}**")
                     
-                    st.write(row['comentario'])
-                    if st.button("✏️ Editar", key=f"edt_{row['id']}"): st.session_state.edit_id = row['id']; st.rerun()
-                    card = gerar_card(row['titulo'], row['nota'], row['comentario'], row['capa_url'], row['nickname'])
-                    st.download_button("📸 Card", card, f"card_{row['id']}.png", key=f"dl_{row['id']}")
+                    nota_show = int(row['nota'])
+                    if row['status'] == "Concluído":
+                        if nota_show >= 75: st.success(f"🏆 {nota_show}")
+                        elif nota_show >= 50: st.warning(f"😐 {nota_show}")
+                        else: st.error(f"💔 {nota_show}")
+                    elif row['status'] == "Abandonado": st.error("💀 Abandonado")
+                    else: st.info("⏳ Em Andamento")
+                    
+                    if categoria_db == "Série" and st.button("📺 Eps", key=f"ep_{row['id']}"): st.session_state.serie_manager_id = row['id']; st.rerun()
+                    with st.expander("Ver +"):
+                        if pd.notnull(row['data_inicio']):
+                            di = row['data_inicio'].strftime('%d/%m/%Y')
+                            dfim = row['data_fim'].strftime('%d/%m/%Y') if pd.notnull(row['data_fim']) else "..."
+                            st.caption(f"🗓️ {di} a {dfim}")
+                        else:
+                            dreg = row['data_registro'].strftime('%d/%m/%Y') if pd.notnull(row['data_registro']) else "-"
+                            st.caption(f"📅 {dreg}")
+                        
+                        st.write(row['comentario'])
+                        if st.button("✏️ Editar", key=f"edt_{row['id']}"): st.session_state.edit_id = row['id']; st.rerun()
+                        card = gerar_card(row['titulo'], row['nota'], row['comentario'], row['capa_url'], row['nickname'])
+                        st.download_button("📸 Card", card, f"card_{row['id']}.png", key=f"dl_{row['id']}")
+
+    with tab_analytics:
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Total de Itens", len(df))
+        concluidos = df[df['status'] == "Concluído"]
+        c2.metric("Concluídos", len(concluidos))
+        media = concluidos['nota'].mean()
+        c3.metric("Média (Concluídos)", f"{media:.1f}" if pd.notnull(media) else "-")
+        st.divider()
+        g1, g2 = st.columns(2)
+        g1.plotly_chart(px.pie(df, names='status', title="Distribuição por Status", hole=0.4))
+        g2.plotly_chart(px.bar(df['plataforma'].value_counts(), title="Plataformas Mais Usadas", orientation='h'))
 
 # --- TELA DE LOGIN ---
 def login_screen():
