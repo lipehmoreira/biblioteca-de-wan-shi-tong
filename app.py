@@ -9,7 +9,7 @@ from sqlalchemy import text
 import hashlib
 
 # --- VERSÃO ---
-APP_VERSION = "6.5 (Fix State Conflict)"
+APP_VERSION = "6.6 (Fix Save Error)"
 DEV_NAME = "FzR0"
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
@@ -30,13 +30,14 @@ if 'serie_manager_id' not in st.session_state: st.session_state.serie_manager_id
 if 'search_results' not in st.session_state: st.session_state.search_results = [] 
 
 # Inicializa variáveis dos widgets de cadastro
-# O Streamlit usará esses valores iniciais para preencher os widgets automaticamente
 if 'novo_titulo' not in st.session_state: st.session_state.novo_titulo = ""
 if 'novo_capa' not in st.session_state: st.session_state.novo_capa = ""
 if 'novo_sinopse_texto' not in st.session_state: st.session_state.novo_sinopse_texto = ""
 if 'novo_comentario' not in st.session_state: st.session_state.novo_comentario = ""
 if 'novo_tipo_manual' not in st.session_state: st.session_state.novo_tipo_manual = "Filme"
 if 'nova_plataforma' not in st.session_state: st.session_state.nova_plataforma = "Cinema"
+if 'novo_status' not in st.session_state: st.session_state.novo_status = "Em Andamento"
+if 'nova_nota' not in st.session_state: st.session_state.nova_nota = 75
 
 # --- CONSTANTES ---
 MAPA_PLATAFORMAS = {
@@ -131,22 +132,16 @@ def executar_busca(termo, categoria):
         st.toast("Nenhum resultado encontrado.", icon="❌")
 
 def confirmar_selecao(item, categoria):
-    # Atualiza diretamente as chaves dos widgets no Session State
     st.session_state.novo_titulo = item['titulo']
     st.session_state.novo_sinopse_texto = item['sinopse']
     st.session_state.novo_capa = item['capa']
-    
-    # Atualiza Categoria
     st.session_state.novo_tipo_manual = categoria
-    st.session_state.novo_tipo = categoria
     
-    # Atualiza Plataforma Padrão
     if categoria == "Filme": st.session_state.nova_plataforma = "Cinema"
     elif categoria == "Série": st.session_state.nova_plataforma = "Netflix"
     elif categoria == "Jogo": st.session_state.nova_plataforma = "PC"
     elif categoria == "Livro": st.session_state.nova_plataforma = "Físico"
     
-    # Tenta preencher ano
     if item['data_str']:
         try:
             if len(item['data_str']) == 4: dt = datetime.strptime(item['data_str'], "%Y").date()
@@ -278,16 +273,23 @@ def gerar_card(titulo, nota, comentario, url_imagem, nickname):
         draw.text((largura - (bb[2]-bb[0]) - 15, y + 90), f"- {nickname.title()}", fill="#999", font=f_n)
     buf = BytesIO(); card.save(buf, format="PNG"); return buf.getvalue()
 
-# --- ACTIONS ---
+# --- ACTIONS (CORREÇÃO AQUI) ---
 def salvar_novo_registro():
-    # Lê diretamente dos estados dos widgets
-    t, tp, p, s, n, c = st.session_state.novo_titulo, st.session_state.novo_tipo_manual, st.session_state.nova_plataforma, st.session_state.novo_status, st.session_state.novo_nota, st.session_state.novo_comentario
-    url, nick = st.session_state.novo_capa, st.session_state.user
+    # USAMOS .get() PARA EVITAR ATTRIBUTE ERROR
+    t = st.session_state.get('novo_titulo', '')
+    tp = st.session_state.get('novo_tipo_manual', 'Filme')
+    p = st.session_state.get('nova_plataforma', 'Outros')
+    s = st.session_state.get('novo_status', 'Em Andamento')
+    n = st.session_state.get('nova_nota', 0)
+    c = st.session_state.get('novo_comentario', '')
+    
+    url, nick = st.session_state.get('novo_capa', ''), st.session_state.user
     
     # Sinopse vem do text area
     sin = st.session_state.get('novo_sinopse_texto', '')
     
-    d_ini, d_fim = st.session_state.get('nova_data_inicio'), st.session_state.get('nova_data_fim', datetime.now().date())
+    d_ini = st.session_state.get('nova_data_inicio')
+    d_fim = st.session_state.get('nova_data_fim', datetime.now().date())
     
     erros = []
     if not t.strip(): erros.append("Título obrigatório.")
@@ -295,7 +297,7 @@ def salvar_novo_registro():
     if erros: st.session_state.msg_erro = erros
     else:
         add_midia(t, tp, p, s, n, c, sin, datetime.now().date(), url, nick, d_ini, d_fim, st.session_state.user)
-        # Limpa campos
+        # Limpa campos com segurança
         for k in ['novo_titulo', 'novo_comentario', 'novo_capa', 'novo_sinopse_texto']: 
             if k in st.session_state: st.session_state[k] = ""
         st.session_state.msg_sucesso = f"✅ {t} salvo!"; st.session_state.msg_erro = None
@@ -480,13 +482,11 @@ else:
         with c1:
             st.text_input("Título", key="novo_titulo")
             
-            # --- CORREÇÃO DO CONFLITO DE WIDGET ---
-            # Removemos o parâmetro index. O widget agora obedece apenas à key "novo_tipo_manual".
+            # --- WIDGETS DE CADASTRO ---
             opt_tp = ["Jogo", "Filme", "Série", "Livro"]
             tp = st.selectbox("Categoria", opt_tp, key="novo_tipo_manual")
             st.session_state.novo_tipo = tp 
             
-            # Plataforma (agora obedecendo à key "nova_plataforma")
             st.selectbox("Plataforma", MAPA_PLATAFORMAS.get(tp, ["Outros"]), key="nova_plataforma")
             
             if tp in ["Jogo", "Livro", "Série"]:
@@ -497,7 +497,7 @@ else:
             st.text_input("Capa URL", key="novo_capa")
             st.slider("Nota", 0, 100, 75, key="nova_nota")
         
-        # Sinopse ligada à variável inicializada
+        # Sinopse
         st.text_area("Sinopse Automática", height=150, key="novo_sinopse_texto")
             
         st.text_area("Seu Comentário", key="novo_comentario")
