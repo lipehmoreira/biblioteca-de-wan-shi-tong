@@ -10,7 +10,7 @@ import hashlib
 import textwrap
 
 # --- VERSÃO ---
-APP_VERSION = "7.3 (Fix Google 403 + Flag JP)"
+APP_VERSION = "7.4 (Open Library + Flag Fix)"
 DEV_NAME = "FzR0"
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
@@ -99,49 +99,39 @@ def buscar_tmdb(query, categoria):
     except Exception as e: st.error(f"Erro TMDB: {e}")
     return lista_final
 
-# 2. API DE LIVROS (GOOGLE BOOKS) - FIX 403
-def buscar_google_books(query):
-    # Correção do Erro 403: Adiciona User-Agent para simular um navegador real
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-    }
-    
-    # Se você tiver uma chave no futuro, coloque em secrets.toml [api] google_books_key = "..."
-    # Mas a API pública deve funcionar com o header acima.
-    api_key = st.secrets.get("api", {}).get("google_books_key")
-    
-    if api_key:
-        url = f"https://www.googleapis.com/books/v1/volumes?q={query}&langRestrict=pt&maxResults=10&key={api_key}"
-    else:
-        url = f"https://www.googleapis.com/books/v1/volumes?q={query}&langRestrict=pt&maxResults=10"
-        
+# 2. API DE LIVROS (OPEN LIBRARY) - SUBSTITUINDO GOOGLE PARA CORRIGIR 403
+def buscar_open_library(query):
+    # Open Library é 100% gratuita e não bloqueia cloud IPs
+    url = f"https://openlibrary.org/search.json?q={query}&limit=10"
     lista_final = []
     try:
-        resp = requests.get(url, headers=headers)
+        resp = requests.get(url)
         if resp.status_code == 200:
             data = resp.json()
-            if 'items' in data:
-                for item in data['items']:
-                    info = item.get('volumeInfo', {})
-                    titulo = info.get('title', 'Sem Título')
-                    dt_str = info.get('publishedDate', '')
-                    ano = dt_str[:4] if dt_str else "N/A"
+            if 'docs' in data:
+                for item in data['docs']:
+                    titulo = item.get('title', 'Sem Título')
+                    ano = str(item.get('first_publish_year', 'N/A'))
                     
-                    imgs = info.get('imageLinks', {})
-                    capa = imgs.get('thumbnail') or imgs.get('smallThumbnail') or ""
+                    # Capa
+                    cover_i = item.get('cover_i')
+                    capa = f"https://covers.openlibrary.org/b/id/{cover_i}-L.jpg" if cover_i else ""
+                    
+                    # Chave da obra para buscar detalhes depois
+                    key_work = item.get('key')
                     
                     lista_final.append({
-                        "id": item.get('id'),
+                        "id": key_work,
                         "label": f"[Livro] {titulo} ({ano})",
                         "titulo": titulo,
-                        "sinopse": info.get('description', ''),
+                        "sinopse": "Carregando sinopse...", # Busca no confirmar
                         "capa": capa,
-                        "data_str": dt_str,
-                        "origem": "google"
+                        "data_str": f"{ano}-01-01", # OpenLibrary as vezes só dá o ano
+                        "origem": "openlibrary"
                     })
         else:
-            st.error(f"Erro Google Books: Status {resp.status_code}. Tente novamente em instantes.")
-    except Exception as e: st.error(f"Erro G.Books: {e}")
+            st.error(f"Erro OpenLibrary: {resp.status_code}")
+    except Exception as e: st.error(f"Erro OL: {e}")
     return lista_final
 
 # 3. API DE JOGOS (RAWG)
@@ -182,7 +172,7 @@ def executar_busca(termo, categoria):
     if categoria in ["Filme", "Série", "Anime"]:
         with st.spinner(f"Pesquisando {categoria} no TMDB..."): res = buscar_tmdb(termo, categoria)
     elif categoria == "Livro":
-        with st.spinner("Pesquisando Google Books..."): res = buscar_google_books(termo)
+        with st.spinner("Pesquisando Open Library..."): res = buscar_open_library(termo)
     elif categoria == "Jogo":
         with st.spinner("Pesquisando RAWG..."): res = buscar_rawg(termo)
     
@@ -196,18 +186,33 @@ def executar_busca(termo, categoria):
 def confirmar_selecao(item, categoria):
     sinopse_final = item['sinopse']
     
-    # Busca detalhes do jogo RAWG
+    # 1. JOGOS (RAWG)
     if item.get('origem') == 'rawg':
         api_key = st.secrets.get("api", {}).get("rawg_key")
         if api_key:
             try:
                 with st.spinner("Baixando sinopse do jogo..."):
-                    url_detalhes = f"https://api.rawg.io/api/games/{item['id']}?key={api_key}"
-                    resp = requests.get(url_detalhes)
+                    resp = requests.get(f"https://api.rawg.io/api/games/{item['id']}?key={api_key}")
                     if resp.status_code == 200:
-                        detalhes = resp.json()
-                        sinopse_final = detalhes.get('description_raw', detalhes.get('description', ''))
+                        det = resp.json()
+                        sinopse_final = det.get('description_raw', det.get('description', ''))
             except: pass
+            
+    # 2. LIVROS (OPEN LIBRARY) - Busca Detalhes
+    elif item.get('origem') == 'openlibrary':
+        try:
+            with st.spinner("Baixando sinopse do livro..."):
+                # item['id'] já vem com a barra ex: /works/OL12345W
+                resp = requests.get(f"https://openlibrary.org{item['id']}.json")
+                if resp.status_code == 200:
+                    det = resp.json()
+                    # A descrição pode ser string ou objeto {'type': 'text', 'value': '...'}
+                    desc = det.get('description', '')
+                    if isinstance(desc, dict):
+                        sinopse_final = desc.get('value', '')
+                    else:
+                        sinopse_final = desc
+        except: pass
 
     st.session_state.novo_titulo = item['titulo']
     st.session_state.novo_sinopse_texto = sinopse_final
@@ -569,6 +574,8 @@ else:
     st.sidebar.title(f"Olá, {st.session_state.user.title()}")
     if st.sidebar.button("Sair"): st.session_state.user = None; st.rerun()
     st.sidebar.markdown("---")
+    
+    # MENU LATERAL CORRIGIDO
     pg = st.sidebar.radio("Ir", ["Registrar Novo", "🎮 Jogos", "🎬 Filmes", "📺 Séries", "🇯🇵 Animes", "📖 Livros"])
     st.sidebar.markdown("---"); st.sidebar.caption(f"v{APP_VERSION} by {DEV_NAME}")
     
@@ -621,5 +628,6 @@ else:
         st.text_area("Seu Comentário", key="novo_comentario")
         st.button("Salvar", type="primary", on_click=salvar_novo_registro)
     else:
+        # MAPEAMENTO CORRIGIDO E PLURALIZADO
         mp = {"🎮 Jogos": "Jogo", "🎬 Filmes": "Filme", "📺 Séries": "Série", "🇯🇵 Animes": "Anime", "📖 Livros": "Livro"}
         render_categoria_page(pg, mp[pg], fa, fm)
