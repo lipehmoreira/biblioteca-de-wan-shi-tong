@@ -7,9 +7,10 @@ from io import BytesIO
 from datetime import datetime
 from sqlalchemy import text
 import hashlib
+import textwrap  # Importante para quebrar o texto no card
 
 # --- VERSÃO ---
-APP_VERSION = "6.9 (Fix Mensagens de Erro)"
+APP_VERSION = "7.0 (Card Inteligente)"
 DEV_NAME = "FzR0"
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
@@ -252,27 +253,49 @@ def salvar_edicao_tabela_eps(serie_id, edits):
     st.cache_data.clear(); recalcular_nota_serie(serie_id); st.toast("Atualizado!")
 
 # --- CARD ---
-def gerar_card(titulo, nota, comentario, url_imagem, nickname):
+def gerar_card(titulo, nota, comentario, url_imagem, nickname, sinopse_bd):
+    # Lógica: Se não tem comentário, usa a sinopse. Se não tem nenhum, fica vazio.
+    texto_para_exibir = comentario if comentario and comentario.strip() else sinopse_bd if sinopse_bd else ""
+    
     try: img = Image.open(BytesIO(requests.get(url_imagem, timeout=3).content)).convert("RGBA")
     except: img = Image.new('RGB', (400, 600), color='#2b2b2b')
     largura = 400
     img = img.resize((largura, int(float(img.size[1]) * (largura / float(img.size[0])))), Image.Resampling.LANCZOS)
     card = Image.new('RGB', (largura, img.size[1] + 160), (15, 15, 15)); card.paste(img, (0, 0))
     draw = ImageDraw.Draw(card)
+    
+    # Nota no topo
     if nota and nota > 0:
         c_bg, c_tx = ('#FFD700', '#000') if nota >= 75 else ('#C0C0C0', '#000') if nota >= 50 else ('#B22222', '#FFF')
         draw.ellipse((largura-90, 20, largura-20, 90), fill=c_bg)
         try: fnt = ImageFont.truetype("arial.ttf", 35)
         except: fnt = ImageFont.load_default()
         draw.text((largura-55, 55), str(int(nota)), fill=c_tx, font=fnt, anchor="mm")
+        
     try: f_t, f_c, f_n = ImageFont.truetype("arial.ttf", 26), ImageFont.truetype("arial.ttf", 16), ImageFont.truetype("arial.ttf", 14)
     except: f_t = f_c = f_n = ImageFont.load_default()
+    
     y = img.size[1] + 20
     draw.text((15, y), f"{titulo[:30]}", fill="#FFF", font=f_t)
-    draw.text((15, y + 40), f"\"{comentario[:90] if comentario else ''}...\"", fill="#CCC", font=f_c)
+    
+    # --- CORREÇÃO: QUEBRA DE LINHA NO COMENTÁRIO/SINOPSE ---
+    # Envolve o texto para caber em aprox 45 caracteres por linha (ajuste fino para largura 400px)
+    linhas = textwrap.wrap(f"\"{texto_para_exibir}\"", width=45)
+    
+    # Limita a 3 linhas para não estourar verticalmente o card se o texto for enorme
+    if len(linhas) > 3:
+        linhas = linhas[:3]
+        linhas[-1] += "..."
+        
+    y_texto = y + 40
+    for linha in linhas:
+        draw.text((15, y_texto), linha, fill="#CCC", font=f_c)
+        y_texto += 20 # Espaçamento entre linhas
+        
     if nickname: 
         bb = draw.textbbox((0,0), f"- {nickname}", font=f_n)
-        draw.text((largura - (bb[2]-bb[0]) - 15, y + 90), f"- {nickname.title()}", fill="#999", font=f_n)
+        draw.text((largura - (bb[2]-bb[0]) - 15, y + 130), f"- {nickname.title()}", fill="#999", font=f_n)
+    
     buf = BytesIO(); card.save(buf, format="PNG"); return buf.getvalue()
 
 # --- ACTIONS & CALLBACKS ---
@@ -303,7 +326,8 @@ def salvar_novo_registro():
     
     erros = []
     if not t.strip(): erros.append("Título obrigatório.")
-    if s == "Concluído" and tp != "Série" and (not c.strip() or n == 0): erros.append("Se for 'Concluído', é necessário dar uma Nota e um Comentário.")
+    # CORREÇÃO: Removida a obrigatoriedade de comentário
+    if s == "Concluído" and tp != "Série" and n == 0: erros.append("Se for 'Concluído', é necessário dar uma Nota.")
     
     if erros: 
         st.session_state.msg_erro = erros
@@ -448,7 +472,8 @@ def render_categoria_page(tit, cat, f_ano, f_mes):
                         
                         st.button("✏️", key=f"e_{r['id']}", on_click=ativar_edicao, args=(r['id'],))
                         
-                        cdata = gerar_card(r['titulo'], r['nota'], r['comentario'], r['capa_url'], r['nickname'])
+                        # Passamos a sinopse também para a função de gerar card
+                        cdata = gerar_card(r['titulo'], r['nota'], r['comentario'], r['capa_url'], r['nickname'], r['sinopse'])
                         st.download_button("📸", cdata, f"c_{r['id']}.png", key=f"d_{r['id']}")
 
     with t2:
@@ -491,7 +516,7 @@ else:
     if pg == "Registrar Novo":
         st.title("➕ Novo")
         
-        # --- CORREÇÃO: Exibe as mensagens de sucesso e erro ---
+        # --- EXIBE AS MENSAGENS DE SUCESSO E ERRO ---
         if 'msg_sucesso' in st.session_state and st.session_state.msg_sucesso: 
             st.success(st.session_state.msg_sucesso)
             st.session_state.msg_sucesso = None # Limpa para não aparecer na próxima
