@@ -10,7 +10,7 @@ import hashlib
 import textwrap
 
 # --- VERSÃO ---
-APP_VERSION = "7.1 (Integração Jogos RAWG)"
+APP_VERSION = "7.2 (Animes + Fix Livros)"
 DEV_NAME = "FzR0"
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
@@ -43,11 +43,13 @@ if 'novo_status' not in st.session_state: st.session_state.novo_status = "Em And
 if 'nova_nota' not in st.session_state: st.session_state.nova_nota = 75
 
 # --- CONSTANTES ---
+# ADICIONADO: Categoria Anime e plataformas específicas
 MAPA_PLATAFORMAS = {
-    "Livro": ["Físico", "Digital"],
+    "Livro": ["Físico", "Kindle", "Audible", "Digital PDF", "Outros"],
     "Jogo": ["PC", "PlayStation", "Xbox", "Nintendo Switch", "Mobile"],
     "Filme": ["Cinema", "Netflix", "Prime Video", "Disney+", "Max", "Apple TV+", "Stremio", "GloboPlay", "Outros"],
-    "Série": ["Netflix", "Prime Video", "Disney+", "Max", "Apple TV+", "Stremio", "GloboPlay", "TV", "Outros"]
+    "Série": ["Netflix", "Prime Video", "Disney+", "Max", "Apple TV+", "Stremio", "GloboPlay", "TV", "Outros"],
+    "Anime": ["Crunchyroll", "Netflix", "Prime Video", "Disney+", "Funimation", "Stremio", "TV", "Outros"]
 }
 
 # --- CONEXÃO ---
@@ -65,13 +67,15 @@ def init_db():
 
 # --- INTEGRAÇÃO COM APIS ---
 
-# 1. API DE FILMES E SÉRIES (TMDB)
+# 1. API DE FILMES, SÉRIES E ANIMES (TMDB)
 def buscar_tmdb(query, categoria):
     api_key = st.secrets.get("api", {}).get("tmdb_key")
     if not api_key: st.warning("⚠️ Chave TMDB não configurada."); return []
     
-    tipo = "movie" if categoria == "Filme" else "tv"
-    url = f"https://api.themoviedb.org/3/search/{tipo}?api_key={api_key}&query={query}&language=pt-BR"
+    # Se for Filme, busca movie. Se for Série ou Anime, busca tv.
+    tipo_api = "movie" if categoria == "Filme" else "tv"
+    
+    url = f"https://api.themoviedb.org/3/search/{tipo_api}?api_key={api_key}&query={query}&language=pt-BR"
     
     lista_final = []
     try:
@@ -79,16 +83,16 @@ def buscar_tmdb(query, categoria):
         data = resp.json()
         if data.get('results'):
             for item in data['results'][:10]:
-                titulo = item.get('title') if categoria == "Filme" else item.get('name')
-                dt_str = item.get('release_date') if categoria == "Filme" else item.get('first_air_date')
+                titulo = item.get('title') if tipo_api == "movie" else item.get('name')
+                dt_str = item.get('release_date') if tipo_api == "movie" else item.get('first_air_date')
                 ano = dt_str[:4] if dt_str else "N/A"
                 
                 poster = item.get('poster_path')
                 capa = f"https://image.tmdb.org/t/p/w500{poster}" if poster else ""
                 
                 lista_final.append({
-                    "id": item.get('id'), # Importante salvar ID para uso futuro se precisar
-                    "label": f"{titulo} ({ano})",
+                    "id": item.get('id'),
+                    "label": f"[{categoria}] {titulo} ({ano})",
                     "titulo": titulo,
                     "sinopse": item.get('overview', ''),
                     "capa": capa,
@@ -98,36 +102,41 @@ def buscar_tmdb(query, categoria):
     except Exception as e: st.error(f"Erro TMDB: {e}")
     return lista_final
 
-# 2. API DE LIVROS (GOOGLE BOOKS)
+# 2. API DE LIVROS (GOOGLE BOOKS) - FIX
 def buscar_google_books(query):
+    # Google Books é pública, não exige chave para buscas simples
     url = f"https://www.googleapis.com/books/v1/volumes?q={query}&langRestrict=pt&maxResults=10"
     lista_final = []
     try:
         resp = requests.get(url)
-        data = resp.json()
-        if 'items' in data:
-            for item in data['items']:
-                info = item['volumeInfo']
-                titulo = info.get('title', '')
-                dt_str = info.get('publishedDate', '')
-                ano = dt_str[:4] if dt_str else "N/A"
-                
-                imgs = info.get('imageLinks', {})
-                capa = imgs.get('thumbnail') or imgs.get('smallThumbnail') or ""
-                
-                lista_final.append({
-                    "id": item.get('id'),
-                    "label": f"{titulo} ({ano})",
-                    "titulo": titulo,
-                    "sinopse": info.get('description', ''),
-                    "capa": capa,
-                    "data_str": dt_str,
-                    "origem": "google"
-                })
+        if resp.status_code == 200:
+            data = resp.json()
+            if 'items' in data:
+                for item in data['items']:
+                    info = item.get('volumeInfo', {})
+                    titulo = info.get('title', 'Sem Título')
+                    dt_str = info.get('publishedDate', '')
+                    ano = dt_str[:4] if dt_str else "N/A"
+                    
+                    # Tratamento de imagem mais robusto
+                    imgs = info.get('imageLinks', {})
+                    capa = imgs.get('thumbnail') or imgs.get('smallThumbnail') or ""
+                    
+                    lista_final.append({
+                        "id": item.get('id'),
+                        "label": f"[Livro] {titulo} ({ano})",
+                        "titulo": titulo,
+                        "sinopse": info.get('description', ''),
+                        "capa": capa,
+                        "data_str": dt_str,
+                        "origem": "google"
+                    })
+        else:
+            st.error(f"Erro Google Books: Status {resp.status_code}")
     except Exception as e: st.error(f"Erro G.Books: {e}")
     return lista_final
 
-# 3. API DE JOGOS (RAWG) - NOVA
+# 3. API DE JOGOS (RAWG)
 def buscar_rawg(query):
     api_key = st.secrets.get("api", {}).get("rawg_key")
     if not api_key: st.warning("⚠️ Chave RAWG não configurada."); return []
@@ -145,12 +154,11 @@ def buscar_rawg(query):
                 ano = dt_str[:4] if dt_str else "N/A"
                 capa = item.get('background_image') or ""
                 
-                # RAWG Search não retorna sinopse completa, pegaremos ao selecionar
                 lista_final.append({
                     "id": item.get('id'),
-                    "label": f"{titulo} ({ano})",
+                    "label": f"[Jogo] {titulo} ({ano})",
                     "titulo": titulo,
-                    "sinopse": "Carregando detalhes...", # Placeholder
+                    "sinopse": "Carregando detalhes...", 
                     "capa": capa,
                     "data_str": dt_str,
                     "origem": "rawg"
@@ -163,8 +171,9 @@ def executar_busca(termo, categoria):
     if not termo: return
     res = []
     
-    if categoria in ["Filme", "Série"]:
-        with st.spinner("Pesquisando TMDB..."): res = buscar_tmdb(termo, categoria)
+    # Adicionado Anime na verificação do TMDB
+    if categoria in ["Filme", "Série", "Anime"]:
+        with st.spinner(f"Pesquisando {categoria} no TMDB..."): res = buscar_tmdb(termo, categoria)
     elif categoria == "Livro":
         with st.spinner("Pesquisando Google Books..."): res = buscar_google_books(termo)
     elif categoria == "Jogo":
@@ -180,7 +189,7 @@ def executar_busca(termo, categoria):
 def confirmar_selecao(item, categoria):
     sinopse_final = item['sinopse']
     
-    # Se for jogo, precisamos buscar os detalhes completos para pegar a sinopse
+    # Se for jogo e tiver API configurada, busca detalhes
     if item.get('origem') == 'rawg':
         api_key = st.secrets.get("api", {}).get("rawg_key")
         if api_key:
@@ -190,21 +199,20 @@ def confirmar_selecao(item, categoria):
                     resp = requests.get(url_detalhes)
                     if resp.status_code == 200:
                         detalhes = resp.json()
-                        # description_raw remove tags HTML automaticamente
                         sinopse_final = detalhes.get('description_raw', detalhes.get('description', ''))
-            except Exception as e:
-                print(f"Erro ao buscar detalhes RAWG: {e}")
+            except: pass
 
-    # Atualiza Session State
     st.session_state.novo_titulo = item['titulo']
     st.session_state.novo_sinopse_texto = sinopse_final
     st.session_state.novo_capa = item['capa']
     st.session_state.novo_tipo_manual = categoria
     
+    # Atualizado Padrões de Plataforma
     if categoria == "Filme": st.session_state.nova_plataforma = "Cinema"
     elif categoria == "Série": st.session_state.nova_plataforma = "Netflix"
+    elif categoria == "Anime": st.session_state.nova_plataforma = "Crunchyroll" # Padrão para Anime
     elif categoria == "Jogo": st.session_state.nova_plataforma = "PC"
-    elif categoria == "Livro": st.session_state.nova_plataforma = "Físico"
+    elif categoria == "Livro": st.session_state.nova_plataforma = "Físico" # Padrão para Livro
     
     if item['data_str']:
         try:
@@ -315,7 +323,6 @@ def salvar_edicao_tabela_eps(serie_id, edits):
 
 # --- CARD ---
 def gerar_card(titulo, nota, comentario, url_imagem, nickname, sinopse_bd):
-    # Regra: Se não tem comentário, usa sinopse. Se sinopse for muito longa, corta.
     texto_base = comentario if comentario and comentario.strip() else sinopse_bd if sinopse_bd else ""
     
     try: img = Image.open(BytesIO(requests.get(url_imagem, timeout=3).content)).convert("RGBA")
@@ -357,7 +364,6 @@ def gerar_card(titulo, nota, comentario, url_imagem, nickname, sinopse_bd):
 
 # --- ACTIONS & CALLBACKS ---
 def ativar_edicao(id_item):
-    """Callback para ativar a edição limpando o estado anterior"""
     keys_edicao = [
         "edit_titulo", "edit_tipo", "edit_plataforma", "edit_status", 
         "edit_nota", "edit_comentario", "edit_capa", "edit_nick", 
@@ -383,7 +389,7 @@ def salvar_novo_registro():
     
     erros = []
     if not t.strip(): erros.append("Título obrigatório.")
-    if s == "Concluído" and tp != "Série" and n == 0: erros.append("Se for 'Concluído', é necessário dar uma Nota.")
+    if s == "Concluído" and tp != "Série" and tp != "Anime" and n == 0: erros.append("Se for 'Concluído', é necessário dar uma Nota.")
     
     if erros: 
         st.session_state.msg_erro = erros
@@ -424,7 +430,9 @@ def atualizar_registro():
 
 def render_categoria_page(tit, cat, f_ano, f_mes):
     st.header(f"{tit}")
-    if st.session_state.serie_manager_id and cat == "Série":
+    
+    # Habilitado gerenciador de episódios para SÉRIE e ANIME
+    if st.session_state.serie_manager_id and cat in ["Série", "Anime"]:
         info = conn.query("SELECT * FROM midia WHERE id=:id AND dono=:o", params={"id": st.session_state.serie_manager_id, "o": st.session_state.user}, ttl=0)
         if not info.empty:
             with st.container(border=True):
@@ -464,7 +472,7 @@ def render_categoria_page(tit, cat, f_ano, f_mes):
                         st.selectbox("Status", ls, index=ls.index(r['status']) if r['status'] in ls else 1, key="edit_status")
                         di = pd.to_datetime(r['data_inicio']).date() if r['data_inicio'] else None
                         df = pd.to_datetime(r['data_fim']).date() if r['data_fim'] else datetime.now().date()
-                        if cat in ["Jogo", "Livro", "Série"]:
+                        if cat in ["Jogo", "Livro", "Série", "Anime"]:
                             cc1, cc2 = st.columns(2)
                             cc1.date_input("Início", value=di, key="edit_data_inicio")
                             cc2.date_input("Fim", value=df, key="edit_data_fim")
@@ -473,7 +481,7 @@ def render_categoria_page(tit, cat, f_ano, f_mes):
                     
                     st.text_area("Sinopse (App)", value=r['sinopse'] if r['sinopse'] else "", key="edit_sinopse")
                     st.text_input("Nick", value=r['nickname'], key="edit_nick")
-                    if cat == "Série":
+                    if cat in ["Série", "Anime"]:
                         lk, nt = st.columns([1, 2])
                         lk.checkbox("Travar Nota?", value=bool(r['travar_nota']), key="edit_travar")
                         nt.slider("Nota", 0, 100, int(r['nota']), key="edit_nota")
@@ -518,7 +526,7 @@ def render_categoria_page(tit, cat, f_ano, f_mes):
                         color = "green" if ns >= 75 else "orange" if ns >= 50 else "red"
                         st.markdown(f":{color}[**{ns}**]")
                     else: st.caption(r['status'])
-                    if cat == "Série" and st.button("Eps", key=f"ep_{r['id']}"): st.session_state.serie_manager_id = r['id']; st.rerun()
+                    if cat in ["Série", "Anime"] and st.button("Eps", key=f"ep_{r['id']}"): st.session_state.serie_manager_id = r['id']; st.rerun()
                     with st.expander("Ver"):
                         st.caption(f"🗓️ Fim: {r['data_fim'].strftime('%d/%m/%Y') if pd.notnull(r['data_fim']) else '-'}")
                         if r['sinopse']: 
@@ -528,6 +536,7 @@ def render_categoria_page(tit, cat, f_ano, f_mes):
                         
                         st.button("✏️", key=f"e_{r['id']}", on_click=ativar_edicao, args=(r['id'],))
                         
+                        # Passamos a sinopse também para a função de gerar card
                         cdata = gerar_card(r['titulo'], r['nota'], r['comentario'], r['capa_url'], r['nickname'], r['sinopse'])
                         st.download_button("📸", cdata, f"c_{r['id']}.png", key=f"d_{r['id']}")
 
@@ -562,7 +571,7 @@ else:
     st.sidebar.title(f"Olá, {st.session_state.user.title()}")
     if st.sidebar.button("Sair"): st.session_state.user = None; st.rerun()
     st.sidebar.markdown("---")
-    pg = st.sidebar.radio("Ir", ["Registrar Novo", "🎮 Jogos", "🎬 Filmes", "📺 Séries", "📖 Livros"])
+    pg = st.sidebar.radio("Ir", ["Registrar Novo", "🎮 Jogos", "🎬 Filmes", "📺 Séries", "🇯🇵 Animes", "📖 Livros"])
     st.sidebar.markdown("---"); st.sidebar.caption(f"v{APP_VERSION} by {DEV_NAME}")
     
     fa = st.sidebar.selectbox("Ano", ["Todos"] + list(range(2024, datetime.now().year + 2)))
@@ -584,7 +593,7 @@ else:
         # BUSCA SELETIVA
         bc1, bc2 = st.columns([3, 1])
         term = bc1.text_input("🔍 Busca Automática")
-        cat_search = bc2.selectbox("Tipo Busca", ["Filme", "Série", "Livro", "Jogo"])
+        cat_search = bc2.selectbox("Tipo Busca", ["Filme", "Série", "Anime", "Livro", "Jogo"])
         if bc2.button("Buscar"): executar_busca(term, cat_search)
         
         # EXIBE RESULTADOS PARA SELEÇÃO
@@ -601,11 +610,11 @@ else:
         c1, c2 = st.columns(2)
         with c1:
             st.text_input("Título", key="novo_titulo")
-            opt_tp = ["Jogo", "Filme", "Série", "Livro"]
+            opt_tp = ["Jogo", "Filme", "Série", "Anime", "Livro"]
             tp = st.selectbox("Categoria", opt_tp, key="novo_tipo_manual")
             st.session_state.novo_tipo = tp 
             st.selectbox("Plataforma", MAPA_PLATAFORMAS.get(tp, ["Outros"]), key="nova_plataforma")
-            if tp in ["Jogo", "Livro", "Série"]:
+            if tp in ["Jogo", "Livro", "Série", "Anime"]:
                 st.date_input("Data Início", value=None, key="nova_data_inicio")
 
         with c2:
@@ -617,5 +626,5 @@ else:
         st.text_area("Seu Comentário", key="novo_comentario")
         st.button("Salvar", type="primary", on_click=salvar_novo_registro)
     else:
-        mp = {"🎮 Jogos": "Jogo", "🎬 Filmes": "Filme", "📺 Séries": "Série", "📖 Livros": "Livro"}
+        mp = {"🎮 Jogos": "Jogo", "🎬 Filmes": "Filme", "📺 Séries": "Série", "🇯🇵 Animes": "Anime", "📖 Livros": "Livro"}
         render_categoria_page(pg, mp[pg], fa, fm)
