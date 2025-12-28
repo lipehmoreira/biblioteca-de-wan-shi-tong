@@ -9,7 +9,7 @@ from sqlalchemy import text
 import hashlib
 
 # --- VERSÃO ---
-APP_VERSION = "6.8 (Fix Duplicação Edição)"
+APP_VERSION = "6.9 (Fix Mensagens de Erro)"
 DEV_NAME = "FzR0"
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
@@ -28,6 +28,8 @@ if 'user' not in st.session_state: st.session_state.user = None
 if 'edit_id' not in st.session_state: st.session_state.edit_id = None
 if 'serie_manager_id' not in st.session_state: st.session_state.serie_manager_id = None
 if 'search_results' not in st.session_state: st.session_state.search_results = [] 
+if 'msg_sucesso' not in st.session_state: st.session_state.msg_sucesso = None
+if 'msg_erro' not in st.session_state: st.session_state.msg_erro = None
 
 # Inicializa variáveis dos widgets de cadastro
 if 'novo_titulo' not in st.session_state: st.session_state.novo_titulo = ""
@@ -276,13 +278,11 @@ def gerar_card(titulo, nota, comentario, url_imagem, nickname):
 # --- ACTIONS & CALLBACKS ---
 def ativar_edicao(id_item):
     """Callback para ativar a edição limpando o estado anterior"""
-    # Lista de chaves de edição que podem estar poluídas
     keys_edicao = [
         "edit_titulo", "edit_tipo", "edit_plataforma", "edit_status", 
         "edit_nota", "edit_comentario", "edit_capa", "edit_nick", 
         "edit_travar", "edit_sinopse", "edit_data_inicio", "edit_data_fim"
     ]
-    # Limpa as chaves para forçar o recarregamento dos dados do novo ID
     for key in keys_edicao:
         if key in st.session_state:
             del st.session_state[key]
@@ -303,17 +303,20 @@ def salvar_novo_registro():
     
     erros = []
     if not t.strip(): erros.append("Título obrigatório.")
-    if s == "Concluído" and tp != "Série" and (not c.strip() or n == 0): erros.append("Concluídos precisam de Comentário e Nota.")
-    if erros: st.session_state.msg_erro = erros
+    if s == "Concluído" and tp != "Série" and (not c.strip() or n == 0): erros.append("Se for 'Concluído', é necessário dar uma Nota e um Comentário.")
+    
+    if erros: 
+        st.session_state.msg_erro = erros
+        st.session_state.msg_sucesso = None
     else:
         add_midia(t, tp, p, s, n, c, sin, datetime.now().date(), url, nick, d_ini, d_fim, st.session_state.user)
         for k in ['novo_titulo', 'novo_comentario', 'novo_capa', 'novo_sinopse_texto']: 
             if k in st.session_state: st.session_state[k] = ""
-        st.session_state.msg_sucesso = f"✅ {t} salvo!"; st.session_state.msg_erro = None
+        st.session_state.msg_sucesso = f"✅ {t} salvo!"
+        st.session_state.msg_erro = None
 
 def atualizar_registro():
     id_e = st.session_state.edit_id
-    # Usa .get() para segurança
     t = st.session_state.get('edit_titulo', '')
     tp = st.session_state.get('edit_tipo', '')
     p = st.session_state.get('edit_plataforma', '')
@@ -338,7 +341,6 @@ def atualizar_registro():
     
     st.session_state.msg_sucesso_edit = f"✅ {t} atualizado!"
     st.session_state.edit_id = None
-    # Callback termina, Streamlit faz o rerun automático
 
 def render_categoria_page(tit, cat, f_ano, f_mes):
     st.header(f"{tit}")
@@ -444,8 +446,6 @@ def render_categoria_page(tit, cat, f_ano, f_mes):
                             st.divider()
                         if r['comentario']: st.markdown(f"💬 **Nota:** {r['comentario']}")
                         
-                        # --- CORREÇÃO DO BOTÃO EDITAR ---
-                        # Usamos on_click para chamar a função que limpa o estado
                         st.button("✏️", key=f"e_{r['id']}", on_click=ativar_edicao, args=(r['id'],))
                         
                         cdata = gerar_card(r['titulo'], r['nota'], r['comentario'], r['capa_url'], r['nickname'])
@@ -490,8 +490,17 @@ else:
 
     if pg == "Registrar Novo":
         st.title("➕ Novo")
-        if 'msg_sucesso' in st.session_state and st.session_state.msg_sucesso: st.success(st.session_state.msg_sucesso)
         
+        # --- CORREÇÃO: Exibe as mensagens de sucesso e erro ---
+        if 'msg_sucesso' in st.session_state and st.session_state.msg_sucesso: 
+            st.success(st.session_state.msg_sucesso)
+            st.session_state.msg_sucesso = None # Limpa para não aparecer na próxima
+            
+        if 'msg_erro' in st.session_state and st.session_state.msg_erro: 
+            for erro in st.session_state.msg_erro:
+                st.error(f"❌ {erro}")
+            st.session_state.msg_erro = None # Limpa para não aparecer na próxima
+
         # BUSCA SELETIVA
         bc1, bc2 = st.columns([3, 1])
         term = bc1.text_input("🔍 Busca Automática")
@@ -505,22 +514,17 @@ else:
             sel = st.selectbox("Resultados Encontrados:", list(opts.keys()))
             if st.button("Utilizar Dados Selecionados"):
                 confirmar_selecao(opts[sel], cat_search)
-                st.rerun() # Recarrega para preencher o formulário
+                st.rerun() 
 
         st.divider()
 
         c1, c2 = st.columns(2)
         with c1:
             st.text_input("Título", key="novo_titulo")
-            
-            # --- WIDGETS DE CADASTRO ---
-            # Removemos o parâmetro index para evitar conflito
             opt_tp = ["Jogo", "Filme", "Série", "Livro"]
             tp = st.selectbox("Categoria", opt_tp, key="novo_tipo_manual")
             st.session_state.novo_tipo = tp 
-            
             st.selectbox("Plataforma", MAPA_PLATAFORMAS.get(tp, ["Outros"]), key="nova_plataforma")
-            
             if tp in ["Jogo", "Livro", "Série"]:
                 st.date_input("Data Início", value=None, key="nova_data_inicio")
 
@@ -529,9 +533,7 @@ else:
             st.text_input("Capa URL", key="novo_capa")
             st.slider("Nota", 0, 100, 75, key="nova_nota")
         
-        # Sinopse ligada à variável inicializada
         st.text_area("Sinopse Automática", height=150, key="novo_sinopse_texto")
-            
         st.text_area("Seu Comentário", key="novo_comentario")
         st.button("Salvar", type="primary", on_click=salvar_novo_registro)
     else:
