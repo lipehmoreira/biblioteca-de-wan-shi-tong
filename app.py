@@ -9,7 +9,7 @@ from sqlalchemy import text
 import hashlib
 
 # --- VERSÃO ---
-APP_VERSION = "6.1 (Sinopse Fix)"
+APP_VERSION = "6.2 (Busca Seletiva)"
 DEV_NAME = "FzR0"
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
@@ -27,6 +27,7 @@ st.markdown("""
 if 'user' not in st.session_state: st.session_state.user = None
 if 'edit_id' not in st.session_state: st.session_state.edit_id = None
 if 'serie_manager_id' not in st.session_state: st.session_state.serie_manager_id = None
+if 'search_results' not in st.session_state: st.session_state.search_results = [] # Lista de resultados da busca
 
 # --- CONSTANTES ---
 MAPA_PLATAFORMAS = {
@@ -41,79 +42,105 @@ conn = st.connection("postgresql", type="sql")
 
 def init_db():
     with conn.session as s:
-        # Tabelas Base
         s.execute(text('''CREATE TABLE IF NOT EXISTS users (username TEXT PRIMARY KEY, password TEXT NOT NULL);'''))
         s.execute(text('''CREATE TABLE IF NOT EXISTS midia (id SERIAL PRIMARY KEY, titulo TEXT NOT NULL, tipo TEXT NOT NULL, plataforma TEXT, status TEXT NOT NULL, nota REAL, comentario TEXT, data_registro DATE, capa_url TEXT, nickname TEXT, data_inicio DATE, data_fim DATE, travar_nota INTEGER DEFAULT 0, dono TEXT);'''))
         s.execute(text('''CREATE TABLE IF NOT EXISTS episodios (id SERIAL PRIMARY KEY, serie_id INTEGER, episodio_num INTEGER, titulo_ep TEXT, nota REAL, data_assistido DATE, FOREIGN KEY(serie_id) REFERENCES midia(id) ON DELETE CASCADE);'''))
-        
-        # MIGRAÇÃO AUTOMÁTICA: Adiciona coluna sinopse se não existir
         try:
             s.execute(text("ALTER TABLE midia ADD COLUMN sinopse TEXT"))
-            st.toast("Banco de dados atualizado: Coluna 'sinopse' criada.", icon="🔧")
-        except Exception:
-            pass # Coluna já existe, segue o jogo
-        
+        except: pass
         s.commit()
 
-# --- INTEGRAÇÃO COM APIS ---
+# --- INTEGRAÇÃO COM APIS (NOVA LÓGICA DE LISTA) ---
 def buscar_tmdb(query, categoria):
     api_key = st.secrets.get("api", {}).get("tmdb_key")
-    if not api_key: st.warning("⚠️ Chave TMDB não configurada."); return None
+    if not api_key: st.warning("⚠️ Chave TMDB não configurada."); return []
+    
     tipo = "movie" if categoria == "Filme" else "tv"
     url = f"https://api.themoviedb.org/3/search/{tipo}?api_key={api_key}&query={query}&language=pt-BR"
+    
+    lista_final = []
     try:
         resp = requests.get(url); data = resp.json()
-        if data['results']:
-            best = data['results'][0]
-            titulo = best.get('title') if categoria == "Filme" else best.get('name')
-            sinopse = best.get('overview', '')
-            poster = best.get('poster_path')
-            capa = f"https://image.tmdb.org/t/p/w500{poster}" if poster else ""
-            dt_str = best.get('release_date') if categoria == "Filme" else best.get('first_air_date')
-            try: dt_obj = datetime.strptime(dt_str, "%Y-%m-%d").date()
-            except: dt_obj = None
-            return {"titulo": titulo, "sinopse": sinopse, "capa": capa, "data": dt_obj}
+        if data.get('results'):
+            # Pega os Top 10 resultados
+            for item in data['results'][:10]:
+                titulo = item.get('title') if categoria == "Filme" else item.get('name')
+                dt_str = item.get('release_date') if categoria == "Filme" else item.get('first_air_date')
+                ano = dt_str[:4] if dt_str else "N/A"
+                
+                poster = item.get('poster_path')
+                capa = f"https://image.tmdb.org/t/p/w500{poster}" if poster else ""
+                
+                lista_final.append({
+                    "label": f"{titulo} ({ano})",
+                    "titulo": titulo,
+                    "sinopse": item.get('overview', ''),
+                    "capa": capa,
+                    "data_str": dt_str
+                })
     except Exception as e: st.error(f"Erro TMDB: {e}")
-    return None
+    return lista_final
 
 def buscar_google_books(query):
-    url = f"https://www.googleapis.com/books/v1/volumes?q={query}&langRestrict=pt&maxResults=1"
+    url = f"https://www.googleapis.com/books/v1/volumes?q={query}&langRestrict=pt&maxResults=10"
+    lista_final = []
     try:
         resp = requests.get(url); data = resp.json()
         if 'items' in data:
-            info = data['items'][0]['volumeInfo']
-            titulo = info.get('title', '')
-            if 'subtitle' in info: titulo += f": {info['subtitle']}"
-            sinopse = info.get('description', '')
-            imgs = info.get('imageLinks', {})
-            capa = imgs.get('thumbnail') or imgs.get('smallThumbnail') or ""
-            dt_str = info.get('publishedDate', '')
-            dt_obj = None
-            if dt_str:
-                try: dt_obj = datetime.strptime(dt_str[:10], "%Y-%m-%d").date()
-                except: 
-                    try: dt_obj = datetime.strptime(dt_str[:4], "%Y").date()
-                    except: pass
-            return {"titulo": titulo, "sinopse": sinopse, "capa": capa, "data": dt_obj}
-    except Exception as e: st.error(f"Erro Google Books: {e}")
-    return None
+            for item in data['items']:
+                info = item['volumeInfo']
+                titulo = info.get('title', '')
+                dt_str = info.get('publishedDate', '')
+                ano = dt_str[:4] if dt_str else "N/A"
+                
+                imgs = info.get('imageLinks', {})
+                capa = imgs.get('thumbnail') or imgs.get('smallThumbnail') or ""
+                
+                lista_final.append({
+                    "label": f"{titulo} ({ano})",
+                    "titulo": titulo,
+                    "sinopse": info.get('description', ''),
+                    "capa": capa,
+                    "data_str": dt_str
+                })
+    except Exception as e: st.error(f"Erro G.Books: {e}")
+    return lista_final
 
-def auto_preencher(termo, categoria):
-    res = None
+def executar_busca(termo, categoria):
+    if not termo: return
+    res = []
     if categoria in ["Filme", "Série"]:
-        with st.spinner(f"TMDB: '{termo}'..."): res = buscar_tmdb(termo, categoria)
+        with st.spinner("Pesquisando TMDB..."): res = buscar_tmdb(termo, categoria)
     elif categoria == "Livro":
-        with st.spinner(f"G.Books: '{termo}'..."): res = buscar_google_books(termo)
+        with st.spinner("Pesquisando Google Books..."): res = buscar_google_books(termo)
     
     if res:
-        # Atualiza os campos e força a mudança da categoria no dropdown
-        st.session_state.novo_titulo = res['titulo']
-        st.session_state.novo_sinopse_auto = res['sinopse'] # Campo separado
-        st.session_state.novo_capa = res['capa']
-        st.session_state.novo_tipo = categoria # Força a categoria correta
-        st.toast("✅ Dados encontrados!", icon="✨")
+        st.session_state.search_results = res
     else:
-        st.toast("❌ Nada encontrado.", icon="🔍")
+        st.session_state.search_results = []
+        st.toast("Nenhum resultado encontrado.", icon="❌")
+
+def confirmar_selecao(item, categoria):
+    # Preenche os campos do formulário
+    st.session_state.novo_titulo = item['titulo']
+    st.session_state.novo_sinopse_auto = item['sinopse']
+    st.session_state.novo_capa = item['capa']
+    st.session_state.novo_tipo = categoria
+    
+    # Tenta converter data
+    if item['data_str']:
+        try:
+            # Tenta formatos comuns
+            if len(item['data_str']) == 4: # Só ano
+                 dt = datetime.strptime(item['data_str'], "%Y").date()
+            else:
+                 dt = datetime.strptime(item['data_str'][:10], "%Y-%m-%d").date()
+            # Como não temos campo de data de lançamento no form, podemos usar isso se quiser no futuro
+            # Por enquanto, não vamos alterar data de inicio/fim para não confundir registro
+        except: pass
+    
+    st.session_state.search_results = [] # Limpa a busca
+    st.toast("Formulário preenchido!", icon="✅")
 
 # --- AUTENTICAÇÃO ---
 def hash_pass(password): return hashlib.sha256(password.encode()).hexdigest()
@@ -169,7 +196,7 @@ def get_data(dono, tipo_filtro=None):
     df = conn.query(query, params=params, ttl=0)
     if not df.empty:
         for col in ['data_registro', 'data_inicio', 'data_fim']: df[col] = pd.to_datetime(df[col], errors='coerce')
-        if 'sinopse' not in df.columns: df['sinopse'] = "" # Garante compatibilidade
+        if 'sinopse' not in df.columns: df['sinopse'] = ""
         df['ano'], df['mes_nome'] = df['data_registro'].dt.year, df['data_registro'].dt.month_name()
         df['nickname'] = df['nickname'].fillna("")
         df['nota'] = pd.to_numeric(df['nota'], errors='coerce').fillna(0.0)
@@ -231,7 +258,6 @@ def gerar_card(titulo, nota, comentario, url_imagem, nickname):
     except: f_t = f_c = f_n = ImageFont.load_default()
     y = img.size[1] + 20
     draw.text((15, y), f"{titulo[:30]}", fill="#FFF", font=f_t)
-    # AQUI: O card usa apenas o comentário do usuário, ignorando a sinopse
     draw.text((15, y + 40), f"\"{comentario[:90] if comentario else ''}...\"", fill="#CCC", font=f_c)
     if nickname: 
         bb = draw.textbbox((0,0), f"- {nickname}", font=f_n)
@@ -242,7 +268,7 @@ def gerar_card(titulo, nota, comentario, url_imagem, nickname):
 def salvar_novo_registro():
     t, tp, p, s, n, c = st.session_state.novo_titulo, st.session_state.novo_tipo, st.session_state.nova_plataforma, st.session_state.novo_status, st.session_state.novo_nota, st.session_state.novo_comentario
     url, nick = st.session_state.novo_capa, st.session_state.user
-    sin = st.session_state.get('novo_sinopse_auto', '') # Pega a sinopse auto
+    sin = st.session_state.get('novo_sinopse_auto', '')
     d_ini, d_fim = st.session_state.get('nova_data_inicio'), st.session_state.get('nova_data_fim', datetime.now().date())
     
     erros = []
@@ -344,7 +370,7 @@ def render_categoria_page(tit, cat, f_ano, f_mes):
             s_map = {"Recente (Conclusão)": "end_date_desc", "Antigo (Conclusão)": "end_date_asc", "Melhor Nota": "score_desc", "Pior Nota": "score_asc", "A-Z": "title_asc"}
             op = st.selectbox("Ordenar", list(s_map.keys()), key=f"s_{cat}")
             sop = s_map[op]
-        # ORDENAÇÃO POR DATA FIM
+        
         if sop == "end_date_desc": df = df.sort_values("data_fim", ascending=False)
         elif sop == "end_date_asc": df = df.sort_values("data_fim", ascending=True)
         elif sop == "score_desc": df = df.sort_values("nota", ascending=False)
@@ -365,13 +391,10 @@ def render_categoria_page(tit, cat, f_ano, f_mes):
                     if cat == "Série" and st.button("Eps", key=f"ep_{r['id']}"): st.session_state.serie_manager_id = r['id']; st.rerun()
                     with st.expander("Ver"):
                         st.caption(f"🗓️ Fim: {r['data_fim'].strftime('%d/%m/%Y') if pd.notnull(r['data_fim']) else '-'}")
-                        # EXIBIÇÃO SEPARADA: SINOPSE vs COMENTÁRIO
                         if r['sinopse']: 
                             st.markdown(f"_{r['sinopse']}_")
                             st.divider()
-                        if r['comentario']:
-                            st.markdown(f"💬 **Nota:** {r['comentario']}")
-                        
+                        if r['comentario']: st.markdown(f"💬 **Nota:** {r['comentario']}")
                         if st.button("✏️", key=f"e_{r['id']}"): st.session_state.edit_id = r['id']; st.rerun()
                         cdata = gerar_card(r['titulo'], r['nota'], r['comentario'], r['capa_url'], r['nickname'])
                         st.download_button("📸", cdata, f"c_{r['id']}.png", key=f"d_{r['id']}")
@@ -417,28 +440,36 @@ else:
         st.title("➕ Novo")
         if 'msg_sucesso' in st.session_state and st.session_state.msg_sucesso: st.success(st.session_state.msg_sucesso)
         
+        # BUSCA SELETIVA
         bc1, bc2 = st.columns([3, 1])
-        term = bc1.text_input("🔍 Busca Automática (TMDB/Google Books)")
-        # Categoria de busca pré-selecionada
+        term = bc1.text_input("🔍 Busca Automática")
         cat_search = bc2.selectbox("Tipo Busca", ["Filme", "Série", "Livro"])
-        if bc2.button("Buscar"): auto_preencher(term, cat_search)
+        if bc2.button("Buscar"): executar_busca(term, cat_search)
+        
+        # EXIBE RESULTADOS PARA SELEÇÃO
+        if st.session_state.search_results:
+            st.info("Selecione o resultado correto abaixo:")
+            opts = {item['label']: item for item in st.session_state.search_results}
+            sel = st.selectbox("Resultados Encontrados:", list(opts.keys()))
+            if st.button("Utilizar Dados Selecionados"):
+                confirmar_selecao(opts[sel], cat_search)
+                st.rerun() # Recarrega para preencher o formulário
+
+        st.divider()
 
         c1, c2 = st.columns(2)
         with c1:
             st.text_input("Título", key="novo_titulo")
-            # Usa novo_tipo se foi definido pela busca, senão o padrão
+            # Logica de seleção de tipo e plataforma
             idx_tp = 0
-            opts = ["Jogo", "Filme", "Série", "Livro"]
-            if 'novo_tipo' in st.session_state and st.session_state.novo_tipo in opts:
-                idx_tp = opts.index(st.session_state.novo_tipo)
+            opt_tp = ["Jogo", "Filme", "Série", "Livro"]
+            if 'novo_tipo' in st.session_state and st.session_state.novo_tipo in opt_tp:
+                idx_tp = opt_tp.index(st.session_state.novo_tipo)
             
-            tp = st.selectbox("Categoria", opts, index=idx_tp, key="novo_tipo_manual")
-            # Força update da session state se o user mudar manualmente
+            tp = st.selectbox("Categoria", opt_tp, index=idx_tp, key="novo_tipo_manual")
             st.session_state.novo_tipo = tp 
-            
             st.selectbox("Plataforma", MAPA_PLATAFORMAS.get(tp, ["Outros"]), key="nova_plataforma")
             
-            # NOVO: CAMPO DE DATA INÍCIO
             if tp in ["Jogo", "Livro", "Série"]:
                 st.date_input("Data Início", value=None, key="nova_data_inicio")
 
@@ -447,9 +478,8 @@ else:
             st.text_input("Capa URL", key="novo_capa")
             st.slider("Nota", 0, 100, 75, key="nova_nota")
         
-        # CAMPO DE SINOPSE (Visual apenas)
         if 'novo_sinopse_auto' in st.session_state and st.session_state.novo_sinopse_auto:
-            st.info(f"📖 Sinopse Encontrada: {st.session_state.novo_sinopse_auto[:100]}...")
+             st.caption(f"Sinopse carregada: {st.session_state.novo_sinopse_auto[:60]}...")
             
         st.text_area("Seu Comentário", key="novo_comentario")
         st.button("Salvar", type="primary", on_click=salvar_novo_registro)
