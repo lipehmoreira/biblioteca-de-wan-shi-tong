@@ -7,10 +7,10 @@ from io import BytesIO
 from datetime import datetime
 from sqlalchemy import text
 import hashlib
-import textwrap  # Importante para quebrar o texto no card
+import textwrap
 
 # --- VERSÃO ---
-APP_VERSION = "7.0 (Card Inteligente)"
+APP_VERSION = "7.1 (Integração Jogos RAWG)"
 DEV_NAME = "FzR0"
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
@@ -64,6 +64,8 @@ def init_db():
         s.commit()
 
 # --- INTEGRAÇÃO COM APIS ---
+
+# 1. API DE FILMES E SÉRIES (TMDB)
 def buscar_tmdb(query, categoria):
     api_key = st.secrets.get("api", {}).get("tmdb_key")
     if not api_key: st.warning("⚠️ Chave TMDB não configurada."); return []
@@ -85,15 +87,18 @@ def buscar_tmdb(query, categoria):
                 capa = f"https://image.tmdb.org/t/p/w500{poster}" if poster else ""
                 
                 lista_final.append({
+                    "id": item.get('id'), # Importante salvar ID para uso futuro se precisar
                     "label": f"{titulo} ({ano})",
                     "titulo": titulo,
                     "sinopse": item.get('overview', ''),
                     "capa": capa,
-                    "data_str": dt_str
+                    "data_str": dt_str,
+                    "origem": "tmdb"
                 })
     except Exception as e: st.error(f"Erro TMDB: {e}")
     return lista_final
 
+# 2. API DE LIVROS (GOOGLE BOOKS)
 def buscar_google_books(query):
     url = f"https://www.googleapis.com/books/v1/volumes?q={query}&langRestrict=pt&maxResults=10"
     lista_final = []
@@ -111,22 +116,59 @@ def buscar_google_books(query):
                 capa = imgs.get('thumbnail') or imgs.get('smallThumbnail') or ""
                 
                 lista_final.append({
+                    "id": item.get('id'),
                     "label": f"{titulo} ({ano})",
                     "titulo": titulo,
                     "sinopse": info.get('description', ''),
                     "capa": capa,
-                    "data_str": dt_str
+                    "data_str": dt_str,
+                    "origem": "google"
                 })
     except Exception as e: st.error(f"Erro G.Books: {e}")
     return lista_final
 
+# 3. API DE JOGOS (RAWG) - NOVA
+def buscar_rawg(query):
+    api_key = st.secrets.get("api", {}).get("rawg_key")
+    if not api_key: st.warning("⚠️ Chave RAWG não configurada."); return []
+    
+    url = f"https://api.rawg.io/api/games?key={api_key}&search={query}&page_size=10"
+    
+    lista_final = []
+    try:
+        resp = requests.get(url)
+        data = resp.json()
+        if data.get('results'):
+            for item in data['results']:
+                titulo = item.get('name')
+                dt_str = item.get('released')
+                ano = dt_str[:4] if dt_str else "N/A"
+                capa = item.get('background_image') or ""
+                
+                # RAWG Search não retorna sinopse completa, pegaremos ao selecionar
+                lista_final.append({
+                    "id": item.get('id'),
+                    "label": f"{titulo} ({ano})",
+                    "titulo": titulo,
+                    "sinopse": "Carregando detalhes...", # Placeholder
+                    "capa": capa,
+                    "data_str": dt_str,
+                    "origem": "rawg"
+                })
+    except Exception as e: st.error(f"Erro RAWG: {e}")
+    return lista_final
+
+# --- LÓGICA DE BUSCA ---
 def executar_busca(termo, categoria):
     if not termo: return
     res = []
+    
     if categoria in ["Filme", "Série"]:
         with st.spinner("Pesquisando TMDB..."): res = buscar_tmdb(termo, categoria)
     elif categoria == "Livro":
         with st.spinner("Pesquisando Google Books..."): res = buscar_google_books(termo)
+    elif categoria == "Jogo":
+        with st.spinner("Pesquisando RAWG..."): res = buscar_rawg(termo)
     
     if res:
         st.session_state.search_results = res
@@ -134,9 +176,28 @@ def executar_busca(termo, categoria):
         st.session_state.search_results = []
         st.toast("Nenhum resultado encontrado.", icon="❌")
 
+# --- CONFIRMAÇÃO E ENRIQUECIMENTO ---
 def confirmar_selecao(item, categoria):
+    sinopse_final = item['sinopse']
+    
+    # Se for jogo, precisamos buscar os detalhes completos para pegar a sinopse
+    if item.get('origem') == 'rawg':
+        api_key = st.secrets.get("api", {}).get("rawg_key")
+        if api_key:
+            try:
+                with st.spinner("Baixando sinopse do jogo..."):
+                    url_detalhes = f"https://api.rawg.io/api/games/{item['id']}?key={api_key}"
+                    resp = requests.get(url_detalhes)
+                    if resp.status_code == 200:
+                        detalhes = resp.json()
+                        # description_raw remove tags HTML automaticamente
+                        sinopse_final = detalhes.get('description_raw', detalhes.get('description', ''))
+            except Exception as e:
+                print(f"Erro ao buscar detalhes RAWG: {e}")
+
+    # Atualiza Session State
     st.session_state.novo_titulo = item['titulo']
-    st.session_state.novo_sinopse_texto = item['sinopse']
+    st.session_state.novo_sinopse_texto = sinopse_final
     st.session_state.novo_capa = item['capa']
     st.session_state.novo_tipo_manual = categoria
     
@@ -254,8 +315,8 @@ def salvar_edicao_tabela_eps(serie_id, edits):
 
 # --- CARD ---
 def gerar_card(titulo, nota, comentario, url_imagem, nickname, sinopse_bd):
-    # Lógica: Se não tem comentário, usa a sinopse. Se não tem nenhum, fica vazio.
-    texto_para_exibir = comentario if comentario and comentario.strip() else sinopse_bd if sinopse_bd else ""
+    # Regra: Se não tem comentário, usa sinopse. Se sinopse for muito longa, corta.
+    texto_base = comentario if comentario and comentario.strip() else sinopse_bd if sinopse_bd else ""
     
     try: img = Image.open(BytesIO(requests.get(url_imagem, timeout=3).content)).convert("RGBA")
     except: img = Image.new('RGB', (400, 600), color='#2b2b2b')
@@ -264,7 +325,6 @@ def gerar_card(titulo, nota, comentario, url_imagem, nickname, sinopse_bd):
     card = Image.new('RGB', (largura, img.size[1] + 160), (15, 15, 15)); card.paste(img, (0, 0))
     draw = ImageDraw.Draw(card)
     
-    # Nota no topo
     if nota and nota > 0:
         c_bg, c_tx = ('#FFD700', '#000') if nota >= 75 else ('#C0C0C0', '#000') if nota >= 50 else ('#B22222', '#FFF')
         draw.ellipse((largura-90, 20, largura-20, 90), fill=c_bg)
@@ -278,11 +338,8 @@ def gerar_card(titulo, nota, comentario, url_imagem, nickname, sinopse_bd):
     y = img.size[1] + 20
     draw.text((15, y), f"{titulo[:30]}", fill="#FFF", font=f_t)
     
-    # --- CORREÇÃO: QUEBRA DE LINHA NO COMENTÁRIO/SINOPSE ---
-    # Envolve o texto para caber em aprox 45 caracteres por linha (ajuste fino para largura 400px)
-    linhas = textwrap.wrap(f"\"{texto_para_exibir}\"", width=45)
-    
-    # Limita a 3 linhas para não estourar verticalmente o card se o texto for enorme
+    # WRAP INTELIGENTE
+    linhas = textwrap.wrap(f"\"{texto_base}\"", width=45)
     if len(linhas) > 3:
         linhas = linhas[:3]
         linhas[-1] += "..."
@@ -290,7 +347,7 @@ def gerar_card(titulo, nota, comentario, url_imagem, nickname, sinopse_bd):
     y_texto = y + 40
     for linha in linhas:
         draw.text((15, y_texto), linha, fill="#CCC", font=f_c)
-        y_texto += 20 # Espaçamento entre linhas
+        y_texto += 20 
         
     if nickname: 
         bb = draw.textbbox((0,0), f"- {nickname}", font=f_n)
@@ -326,7 +383,6 @@ def salvar_novo_registro():
     
     erros = []
     if not t.strip(): erros.append("Título obrigatório.")
-    # CORREÇÃO: Removida a obrigatoriedade de comentário
     if s == "Concluído" and tp != "Série" and n == 0: erros.append("Se for 'Concluído', é necessário dar uma Nota.")
     
     if erros: 
@@ -472,7 +528,6 @@ def render_categoria_page(tit, cat, f_ano, f_mes):
                         
                         st.button("✏️", key=f"e_{r['id']}", on_click=ativar_edicao, args=(r['id'],))
                         
-                        # Passamos a sinopse também para a função de gerar card
                         cdata = gerar_card(r['titulo'], r['nota'], r['comentario'], r['capa_url'], r['nickname'], r['sinopse'])
                         st.download_button("📸", cdata, f"c_{r['id']}.png", key=f"d_{r['id']}")
 
@@ -519,17 +574,17 @@ else:
         # --- EXIBE AS MENSAGENS DE SUCESSO E ERRO ---
         if 'msg_sucesso' in st.session_state and st.session_state.msg_sucesso: 
             st.success(st.session_state.msg_sucesso)
-            st.session_state.msg_sucesso = None # Limpa para não aparecer na próxima
+            st.session_state.msg_sucesso = None 
             
         if 'msg_erro' in st.session_state and st.session_state.msg_erro: 
             for erro in st.session_state.msg_erro:
                 st.error(f"❌ {erro}")
-            st.session_state.msg_erro = None # Limpa para não aparecer na próxima
+            st.session_state.msg_erro = None 
 
         # BUSCA SELETIVA
         bc1, bc2 = st.columns([3, 1])
         term = bc1.text_input("🔍 Busca Automática")
-        cat_search = bc2.selectbox("Tipo Busca", ["Filme", "Série", "Livro"])
+        cat_search = bc2.selectbox("Tipo Busca", ["Filme", "Série", "Livro", "Jogo"])
         if bc2.button("Buscar"): executar_busca(term, cat_search)
         
         # EXIBE RESULTADOS PARA SELEÇÃO
