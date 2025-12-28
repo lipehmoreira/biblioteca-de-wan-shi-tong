@@ -10,7 +10,7 @@ import hashlib
 import textwrap
 
 # --- VERSÃO ---
-APP_VERSION = "7.4 (Open Library + Flag Fix)"
+APP_VERSION = "7.5 (Fix Capa/Sinopse Livros)"
 DEV_NAME = "FzR0"
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
@@ -99,9 +99,8 @@ def buscar_tmdb(query, categoria):
     except Exception as e: st.error(f"Erro TMDB: {e}")
     return lista_final
 
-# 2. API DE LIVROS (OPEN LIBRARY) - SUBSTITUINDO GOOGLE PARA CORRIGIR 403
+# 2. API DE LIVROS (OPEN LIBRARY) - LÓGICA DE CAPA REFORÇADA
 def buscar_open_library(query):
-    # Open Library é 100% gratuita e não bloqueia cloud IPs
     url = f"https://openlibrary.org/search.json?q={query}&limit=10"
     lista_final = []
     try:
@@ -113,20 +112,26 @@ def buscar_open_library(query):
                     titulo = item.get('title', 'Sem Título')
                     ano = str(item.get('first_publish_year', 'N/A'))
                     
-                    # Capa
+                    # --- LÓGICA DE CAPA REFORÇADA ---
+                    capa = ""
+                    # Tentativa 1: ID da Capa direto
                     cover_i = item.get('cover_i')
-                    capa = f"https://covers.openlibrary.org/b/id/{cover_i}-L.jpg" if cover_i else ""
+                    if cover_i:
+                        capa = f"https://covers.openlibrary.org/b/id/{cover_i}-L.jpg"
+                    # Tentativa 2: ISBN (se não tiver ID)
+                    elif 'isbn' in item and len(item['isbn']) > 0:
+                        isbn_val = item['isbn'][0]
+                        capa = f"https://covers.openlibrary.org/b/isbn/{isbn_val}-L.jpg"
                     
-                    # Chave da obra para buscar detalhes depois
-                    key_work = item.get('key')
+                    key_work = item.get('key') # ex: /works/OL123...
                     
                     lista_final.append({
                         "id": key_work,
                         "label": f"[Livro] {titulo} ({ano})",
                         "titulo": titulo,
-                        "sinopse": "Carregando sinopse...", # Busca no confirmar
+                        "sinopse": "Buscando sinopse...", # Será substituído ao clicar
                         "capa": capa,
-                        "data_str": f"{ano}-01-01", # OpenLibrary as vezes só dá o ano
+                        "data_str": f"{ano}-01-01", 
                         "origem": "openlibrary"
                     })
         else:
@@ -185,6 +190,7 @@ def executar_busca(termo, categoria):
 # --- CONFIRMAÇÃO ---
 def confirmar_selecao(item, categoria):
     sinopse_final = item['sinopse']
+    capa_final = item['capa']
     
     # 1. JOGOS (RAWG)
     if item.get('origem') == 'rawg':
@@ -198,25 +204,36 @@ def confirmar_selecao(item, categoria):
                         sinopse_final = det.get('description_raw', det.get('description', ''))
             except: pass
             
-    # 2. LIVROS (OPEN LIBRARY) - Busca Detalhes
+    # 2. LIVROS (OPEN LIBRARY) - Busca Detalhes Profundos
     elif item.get('origem') == 'openlibrary':
         try:
-            with st.spinner("Baixando sinopse do livro..."):
-                # item['id'] já vem com a barra ex: /works/OL12345W
-                resp = requests.get(f"https://openlibrary.org{item['id']}.json")
+            with st.spinner("Baixando detalhes do livro..."):
+                # item['id'] é algo como "/works/OL263319W"
+                url_work = f"https://openlibrary.org{item['id']}.json"
+                resp = requests.get(url_work)
                 if resp.status_code == 200:
                     det = resp.json()
-                    # A descrição pode ser string ou objeto {'type': 'text', 'value': '...'}
+                    
+                    # Tenta pegar descrição
                     desc = det.get('description', '')
                     if isinstance(desc, dict):
                         sinopse_final = desc.get('value', '')
                     else:
-                        sinopse_final = desc
-        except: pass
+                        sinopse_final = str(desc)
+                    
+                    if not sinopse_final: sinopse_final = "Sinopse não disponível na Open Library."
+                    
+                    # Se a capa original da busca estava vazia, tenta achar no detalhe
+                    if not capa_final and 'covers' in det and det['covers']:
+                        capa_final = f"https://covers.openlibrary.org/b/id/{det['covers'][0]}-L.jpg"
+        except Exception as e:
+            print(f"Erro detalhe livro: {e}")
+            sinopse_final = "Erro ao carregar sinopse."
 
+    # Atualiza Session State
     st.session_state.novo_titulo = item['titulo']
     st.session_state.novo_sinopse_texto = sinopse_final
-    st.session_state.novo_capa = item['capa']
+    st.session_state.novo_capa = capa_final
     st.session_state.novo_tipo_manual = categoria
     
     if categoria == "Filme": st.session_state.nova_plataforma = "Cinema"
@@ -227,14 +244,16 @@ def confirmar_selecao(item, categoria):
     
     if item['data_str']:
         try:
-            if len(item['data_str']) == 4: dt = datetime.strptime(item['data_str'], "%Y").date()
-            else: dt = datetime.strptime(item['data_str'][:10], "%Y-%m-%d").date()
+            # Tenta formatos variados de data
+            d_str = str(item['data_str'])
+            if len(d_str) == 4: dt = datetime.strptime(d_str, "%Y").date()
+            else: dt = datetime.strptime(d_str[:10], "%Y-%m-%d").date()
         except: pass
     
     st.session_state.search_results = [] 
     st.toast(f"Dados importados: {item['titulo']}", icon="✅")
 
-# --- AUTENTICAÇÃO E CRUD (Inalterado) ---
+# --- AUTENTICAÇÃO E CRUD (Mantido) ---
 def hash_pass(password): return hashlib.sha256(password.encode()).hexdigest()
 def register_user(username, password):
     user_clean, pass_hash = username.strip().lower(), hash_pass(password)
@@ -540,6 +559,7 @@ def render_categoria_page(tit, cat, f_ano, f_mes):
                         if r['comentario']: st.markdown(f"💬 **Nota:** {r['comentario']}")
                         
                         st.button("✏️", key=f"e_{r['id']}", on_click=ativar_edicao, args=(r['id'],))
+                        
                         cdata = gerar_card(r['titulo'], r['nota'], r['comentario'], r['capa_url'], r['nickname'], r['sinopse'])
                         st.download_button("📸", cdata, f"c_{r['id']}.png", key=f"d_{r['id']}")
 
@@ -575,7 +595,6 @@ else:
     if st.sidebar.button("Sair"): st.session_state.user = None; st.rerun()
     st.sidebar.markdown("---")
     
-    # MENU LATERAL CORRIGIDO
     pg = st.sidebar.radio("Ir", ["Registrar Novo", "🎮 Jogos", "🎬 Filmes", "📺 Séries", "🇯🇵 Animes", "📖 Livros"])
     st.sidebar.markdown("---"); st.sidebar.caption(f"v{APP_VERSION} by {DEV_NAME}")
     
@@ -628,6 +647,5 @@ else:
         st.text_area("Seu Comentário", key="novo_comentario")
         st.button("Salvar", type="primary", on_click=salvar_novo_registro)
     else:
-        # MAPEAMENTO CORRIGIDO E PLURALIZADO
         mp = {"🎮 Jogos": "Jogo", "🎬 Filmes": "Filme", "📺 Séries": "Série", "🇯🇵 Animes": "Anime", "📖 Livros": "Livro"}
         render_categoria_page(pg, mp[pg], fa, fm)
